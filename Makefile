@@ -20,3 +20,6 @@ test:
 # Remove the virtual environment (use with care)
 clean:
 	rm -rf $(VENV)
+
+Courses:
+Enhancing the Recruitment of Marginalized Communities in Clinical Trials – Vanderbilt University
