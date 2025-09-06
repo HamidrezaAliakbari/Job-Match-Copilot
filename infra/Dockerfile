@@ -1,15 +1,13 @@
-# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
-# Set the working directory
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# Copy requirements first for caching
-COPY requirements.txt ./
+RUN pip install --upgrade pip setuptools wheel
+COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the code
 COPY . .
 
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8080"]
