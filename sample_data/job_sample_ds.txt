@@ -1,0 +1,15 @@
+**Job Title:** Senior Data Scientist
+
+**Description:**
+We are seeking a senior data scientist to join our analytics team.  You will design, implement and deploy machine learning models to solve complex business problems in the financial domain.  The ideal candidate has experience with Python, pandas, scikit‑learn and deep learning frameworks.  Responsibilities include working with cross‑functional teams, analysing data, and communicating results to stakeholders.
+
+**Requirements:**
+* 5+ years of experience in data science or related field.
+* Proficiency in Python, scikit‑learn and pandas.
+* Experience deploying machine learning models in production.
+* Excellent communication skills and ability to work cross‑functionally.
+* Master’s degree in Computer Science or related discipline.
+
+**Preferred Qualifications:**
+* Experience with TensorFlow or PyTorch.
+* Knowledge of SQL and data warehousing.

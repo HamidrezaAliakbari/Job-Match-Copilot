@@ -1,0 +1,23 @@
+John Doe
+
+Summary
+-------
+Seasoned data scientist with 5 years of experience building machine learning models for financial services.  Proficient in Python, pandas, scikit‑learn and TensorFlow.  Passionate about turning data into insights and delivering business value.
+
+Experience
+---------
+**Data Scientist** – FinTech Corp (2021–Present)
+* Built predictive models to forecast credit risk using scikit‑learn, improving default prediction accuracy by 15 percentage points.
+* Led a small team to develop a real‑time fraud detection system using anomaly detection techniques in Python.
+
+**Junior Data Scientist** – Analytics Inc. (2018–2021)
+* Analysed customer behaviour data with pandas and SQL to identify growth opportunities.
+* Worked with cross‑functional teams to deploy machine learning models in production.
+
+Education
+---------
+M.S. in Computer Science, University of Minnesota, 2018
+
+Skills
+------
+Python, Machine Learning, scikit‑learn, pandas, SQL, Data Analysis, TensorFlow

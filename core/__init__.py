@@ -1,0 +1,1 @@
+"""Core package for job_match_copilot."""

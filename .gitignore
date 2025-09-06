@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Data & models
+data/artifacts/
+models/*.pkl
+models/*.bin
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+.streamlit/

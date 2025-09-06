@@ -1,0 +1,15 @@
+{
+  "resume_path": "sample_data/resume_sample.txt",
+  "job_path": "sample_data/job_sample_ds.txt",
+  "requirements": [
+    "5+ years of experience",
+    "Proficiency in Python, scikit-learn and pandas",
+    "Experience deploying machine learning models in production",
+    "Excellent communication skills",
+    "Master’s degree in Computer Science"
+  ],
+  "preferred": [
+    "Experience with TensorFlow or PyTorch",
+    "Knowledge of SQL and data warehousing"
+  ]
+}
