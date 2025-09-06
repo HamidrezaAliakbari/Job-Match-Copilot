@@ -54,7 +54,7 @@ if st.button("Ingest & Score", type="primary"):
             st.subheader("Update requests by section")
             cf = requests.post(f"{api_base}/counterfactual", json=payload, timeout=60).json()
             by_sec = cf.get("suggestions_by_section", {}) or {}
-            order = ["summary","skills","experience","projects","education"]
+            order = ["summary","skills","experience","projects","education","courses"]
             for sec in order:
                 items = by_sec.get(sec, [])
                 with st.expander(f"{sec.title()} ({len(items)})", expanded=(sec in ["summary","skills"])):

@@ -8,6 +8,7 @@ SECTION_KEYS = {
     "experience": ["experience", "work experience", "professional experience", "employment"],
     "education": ["education", "academic"],
     "projects": ["projects", "personal projects", "research projects"],
+    "courses": ["courses", "relevant coursework", "coursework"],  # NEW
 }
 
 def _split_lines(text: str) -> List[str]:
@@ -42,14 +43,14 @@ def parse_resume(path: str) -> Dict:
     sections: Dict[str, List[str]] = {k: [] for k in SECTION_KEYS.keys()}
     sections.setdefault("other", [])
 
-    current = "summary"  # default early lines are treated as summary until a header appears
+    current = "summary"  # default early lines treated as summary
     for ln in lines:
         low = ln.lower().strip()
         new_sec = _which_section(low, current)
         if new_sec != current:
             current = new_sec
-            continue if_header := False
-        # heuristically treat “header lines” as markers — we already switched section, skip line if it’s a header
+            continue
+        # skip header lines that are just section names
         if any(low.startswith(k) for ks in SECTION_KEYS.values() for k in ks):
             continue
         sections.setdefault(current, []).append(ln)
@@ -61,4 +62,5 @@ def parse_resume(path: str) -> Dict:
         "experience_bullets": [ln for ln in sections.get("experience", []) if ln.strip()][:256],
         "projects": [ln for ln in sections.get("projects", []) if ln.strip()][:128],
         "education": [ln for ln in sections.get("education", []) if ln.strip()][:64],
+        "courses": [ln for ln in sections.get("courses", []) if ln.strip()][:64],  # NEW
     }

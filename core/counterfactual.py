@@ -1,9 +1,16 @@
 from __future__ import annotations
 from typing import Dict, List, Tuple
 
-SECTION_NAMES = ["summary", "skills", "experience", "projects", "education"]
+# Added "courses" so UI and logic can group suggestions there:
+SECTION_NAMES = ["summary", "skills", "experience", "projects", "education", "courses"]
+
+COURSE_HINT_TERMS = [
+    "course", "coursera", "edx", "udacity", "udemy", "bootcamp", "nanodegree",
+    "relevant coursework", "certificate", "certification", "workshop", "seminar"
+]
 
 def _evidence_section(snip: str, resume: Dict) -> str:
+    """Map an evidence snippet back to a resume section."""
     if not isinstance(snip, str):
         return "summary"
     if snip in (resume.get("experience_bullets") or []):
@@ -12,13 +19,31 @@ def _evidence_section(snip: str, resume: Dict) -> str:
         return "projects"
     if snip in (resume.get("education") or []):
         return "education"
-    # if a skill token is exactly present
+    if snip in (resume.get("courses") or []):
+        return "courses"
+    # exact skill match
     if any(snip.strip().lower() == s.lower() for s in (resume.get("skills") or [])):
         return "skills"
+    # heuristic: text smells like a course
+    low = snip.lower().strip()
+    if any(t in low for t in COURSE_HINT_TERMS):
+        return "courses"
     return "summary"
 
 def _suggest_for_partial(req: str, evidence: List[str], section_hint: str) -> Dict:
+    """Generate a suggestion for partially met requirements, respecting section semantics."""
     before = evidence[0] if evidence else ""
+    if section_hint == "courses":
+        # Courses are not experience bullets; do NOT suggest metrics
+        return {
+            "target_requirement": req,
+            "section": "courses",
+            "change_type": "course_alignment",
+            "before": before,
+            "after": "Keep course titles concise. Optionally add provider and completion year; do not add fabricated metrics.",
+            "rationale": "Courses represent learning, not outcomes; align naming/provider instead of metrics.",
+        }
+    # Default path: suggest quantification for experience/projects
     return {
         "target_requirement": req,
         "section": section_hint,
@@ -29,55 +54,64 @@ def _suggest_for_partial(req: str, evidence: List[str], section_hint: str) -> Di
     }
 
 def _suggest_for_missing(req: str, section_hint: str) -> Dict:
-    # If missing, propose a section-appropriate update
-    if section_hint == "skills":
-        after = "Add the specific tool/skill **only if you actually used it**; otherwise plan a micro-project to earn it."
+    """Generate a suggestion for missing requirements, section-aware."""
+    if section_hint == "courses":
+        after = "List a directly relevant course/cert (provider + year) if truly completed; otherwise plan a short micro-course."
+    elif section_hint == "skills":
+        after = "Add the specific tool/skill ONLY if you actually used it; otherwise plan a micro-project to earn it."
     elif section_hint in ("experience", "projects"):
         after = "Add or adjust one bullet aligning with the JD phrasing; link a public artifact if applicable."
     elif section_hint == "education":
-        after = "Add relevant coursework/certifications (e.g., IRB, GCP, HIPAA, or course names) if applicable."
+        after = "Add relevant coursework/certifications (e.g., IRB, GCP, HIPAA) if applicable."
     else:  # summary
         after = "Add a one-liner aligning your focus to the JD (keywords + outcome)."
     return {
         "target_requirement": req,
         "section": section_hint,
-        "change_type": "phrasing_or_project",
+        "change_type": "phrasing_or_project" if section_hint != "courses" else "course_alignment",
         "after": after,
-        "rationale": "Align terminology or provide verifiable artifact (no fabrication).",
+        "rationale": "Align terminology to the JD while avoiding fabrication.",
     }
 
 def generate_counterfactuals_by_section(evals: List[Dict], resume: Dict, job: Dict) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
-    """Return (sectioned_suggestions, flat_list)."""
+    """Return (sectioned_suggestions, flat_list). Course entries never get 'add a metric' prompts."""
     sectioned: Dict[str, List[Dict]] = {k: [] for k in SECTION_NAMES}
     flat: List[Dict] = []
 
-    # Heuristic: infer target section from strongest evidence, else default:
-    # for Missing reqs with no evidence, route to 'summary' first; if it's a tool/skill term, route to 'skills'.
     for e in evals:
         req = e["requirement"]
         status = e["status"]
         ev = e.get("evidence", []) or []
-        sec_hint = _evidence_section(ev[0], resume) if ev else (
-            "skills" if any(w in req.lower() for w in ["python","pytorch","aws","docker","faiss","qdrant","sql","tms","irb","gcp"]) else "summary"
-        )
+
+        # Decide section: strongest evidence -> section; if none, route skills or summary heuristically
+        if ev:
+            sec_hint = _evidence_section(ev[0], resume)
+        else:
+            low = req.lower()
+            if any(term in low for term in ["python", "pytorch", "aws", "docker", "faiss", "qdrant", "sql", "tms", "irb", "gcp", "hipaa"]):
+                sec_hint = "skills"
+            elif any(term in low for term in ["course", "certificate", "workshop", "seminar"]):
+                sec_hint = "courses"
+            else:
+                sec_hint = "summary"
+
         if status == "Partial":
             sug = _suggest_for_partial(req, ev, sec_hint)
         elif status == "Missing":
             sug = _suggest_for_missing(req, sec_hint)
         else:
-            # No suggestion for 'Met'
             continue
 
         sectioned.setdefault(sug["section"], []).append(sug)
         flat.append(sug)
 
-    # Optional: section-level “meta” prompts to guide rewrites
-    if resume.get("summary", "") and not sectioned["summary"]:
+    # Optional: add a gentle summary tightening if none were added
+    if (resume.get("summary") or "") and not sectioned["summary"]:
         sectioned["summary"].append({
             "section": "summary",
             "change_type": "tighten_summary",
-            "after": "Condense to 1–2 lines highlighting your primary stack and 1 quantified win aligned to the JD.",
-            "rationale": "Sharpen positioning to match JD keywords and impact.",
+            "after": "Condense to 1–2 lines with your primary stack and one quantified win tied to the JD.",
+            "rationale": "Sharpen positioning; this is the first thing reviewers read.",
         })
 
     return sectioned, flat
