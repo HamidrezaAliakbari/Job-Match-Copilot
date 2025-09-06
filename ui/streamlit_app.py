@@ -2,10 +2,10 @@ import streamlit as st
 import requests
 
 st.set_page_config(page_title="Job-Match Copilot", layout="wide")
-st.title("💼 Job-Match Copilot (MVP)")
+st.title("💼 Job-Match Copilot (MVP) — Section-wise suggestions")
 
 api_base = st.sidebar.text_input("API base", "http://127.0.0.1:8000")
-st.sidebar.markdown("Tip: start Uvicorn from the project root so relative paths like `data/samples/...` work.")
+st.sidebar.markdown("Tip: start Uvicorn from the project root so relative paths work.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -17,15 +17,15 @@ with col2:
     job_text = st.text_area("Paste job description (or leave blank if using file paths)")
     job_path = st.text_input("…or job file path (e.g., data/samples/job_sample.md)")
 
-st.markdown("---")
-
 if st.button("Ingest & Score", type="primary"):
     payload = {}
     if resume_text.strip():
         payload["resume"] = {
+            "summary": resume_text.split("\n", 3)[0] if resume_text else "",
             "skills": [],
             "experience_bullets": [l for l in resume_text.splitlines() if l.strip()],
             "projects": [],
+            "education": [],
         }
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
@@ -51,16 +51,23 @@ if st.button("Ingest & Score", type="primary"):
                 for snip in ev.get("evidence", []):
                     st.code(snip)
 
-            st.subheader("Counterfactuals")
+            st.subheader("Update requests by section")
             cf = requests.post(f"{api_base}/counterfactual", json=payload, timeout=60).json()
-            for sug in cf.get("suggestions", []):
-                st.markdown(f"- **{sug.get('change_type','')}** → {sug.get('target_requirement','')}")
-                if sug.get("before"):
-                    st.caption("Before"); st.code(sug["before"])
-                if sug.get("after"):
-                    st.caption("After"); st.code(sug["after"])
-                if sug.get("rationale"):
-                    st.caption("Why"); st.write(sug["rationale"])
+            by_sec = cf.get("suggestions_by_section", {}) or {}
+            order = ["summary","skills","experience","projects","education"]
+            for sec in order:
+                items = by_sec.get(sec, [])
+                with st.expander(f"{sec.title()} ({len(items)})", expanded=(sec in ["summary","skills"])):
+                    if not items:
+                        st.caption("No suggestions for this section.")
+                    for sug in items:
+                        st.markdown(f"- **{sug.get('change_type','suggestion')}** → {sug.get('target_requirement','')}")
+                        if sug.get("before"):
+                            st.caption("Before"); st.code(sug["before"])
+                        if sug.get("after"):
+                            st.caption("After"); st.code(sug["after"])
+                        if sug.get("rationale"):
+                            st.caption("Why"); st.write(sug["rationale"])
 
             st.subheader("Action")
             act = requests.post(f"{api_base}/action", json=payload, timeout=60).json()

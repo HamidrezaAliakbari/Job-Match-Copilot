@@ -24,7 +24,10 @@ class ScoreResponse(BaseModel):
     evaluations: List[RequirementResult]
 
 class CounterfactualResponse(BaseModel):
-    suggestions: List[Dict[str, Any]]
+    # New: section-wise suggestions
+    suggestions_by_section: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    # Back-compat (optional): flat list if you still want it
+    suggestions: List[Dict[str, Any]] = Field(default_factory=list)
 
 class ActionResponse(BaseModel):
     decision: str

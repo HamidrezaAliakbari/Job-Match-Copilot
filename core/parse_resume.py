@@ -2,20 +2,22 @@ from __future__ import annotations
 from typing import Dict, List
 import re
 
-def _split_lines(text: str) -> List[str]:
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+SECTION_KEYS = {
+    "summary": ["summary", "profile", "objective"],
+    "skills": ["skills", "technical skills"],
+    "experience": ["experience", "work experience", "professional experience", "employment"],
+    "education": ["education", "academic"],
+    "projects": ["projects", "personal projects", "research projects"],
+}
 
-def _sectionize(lines: List[str]) -> dict:
-    sec_map = {"skills": [], "experience": [], "education": [], "projects": [], "other": []}
-    cur = "other"
-    for ln in lines:
-        low = ln.lower()
-        if "skill" in low: cur = "skills"; continue
-        if "experience" in low or "work" in low: cur = "experience"; continue
-        if "education" in low: cur = "education"; continue
-        if "project" in low: cur = "projects"; continue
-        sec_map.setdefault(cur, []).append(ln)
-    return sec_map
+def _split_lines(text: str) -> List[str]:
+    return [ln.rstrip() for ln in text.splitlines()]
+
+def _which_section(line_lower: str, current: str) -> str:
+    for sec, keys in SECTION_KEYS.items():
+        if any(k in line_lower for k in keys):
+            return sec
+    return current
 
 def _extract_skills(skill_lines: List[str]) -> List[str]:
     skills = []
@@ -23,23 +25,40 @@ def _extract_skills(skill_lines: List[str]) -> List[str]:
         parts = re.split(r"[•,;/\|]|\t|\s{2,}", ln)
         for p in parts:
             t = p.strip()
-            if t and len(t) <= 40:
+            if t and 1 < len(t) <= 40:
                 skills.append(t)
     seen, out = set(), []
     for s in skills:
-        if s.lower() not in seen:
-            seen.add(s.lower()); out.append(s)
+        k = s.lower()
+        if k not in seen:
+            seen.add(k); out.append(s)
     return out[:128]
 
 def parse_resume(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
-        text = f.read()
-    lines = _split_lines(text)
-    secs = _sectionize(lines)
+        raw = f.read()
+
+    lines = [ln for ln in _split_lines(raw) if ln.strip()]
+    sections: Dict[str, List[str]] = {k: [] for k in SECTION_KEYS.keys()}
+    sections.setdefault("other", [])
+
+    current = "summary"  # default early lines are treated as summary until a header appears
+    for ln in lines:
+        low = ln.lower().strip()
+        new_sec = _which_section(low, current)
+        if new_sec != current:
+            current = new_sec
+            continue if_header := False
+        # heuristically treat “header lines” as markers — we already switched section, skip line if it’s a header
+        if any(low.startswith(k) for ks in SECTION_KEYS.values() for k in ks):
+            continue
+        sections.setdefault(current, []).append(ln)
+
     return {
-        "raw_text": text,
-        "skills": _extract_skills(secs.get("skills", [])),
-        "experience_bullets": secs.get("experience", []),
-        "projects": secs.get("projects", []),
-        "education": secs.get("education", []),
+        "raw_text": raw,
+        "summary": " ".join(sections.get("summary", [])[:5]).strip(),
+        "skills": _extract_skills(sections.get("skills", [])),
+        "experience_bullets": [ln for ln in sections.get("experience", []) if ln.strip()][:256],
+        "projects": [ln for ln in sections.get("projects", []) if ln.strip()][:128],
+        "education": [ln for ln in sections.get("education", []) if ln.strip()][:64],
     }

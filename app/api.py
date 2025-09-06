@@ -1,4 +1,5 @@
-"""FastAPI application for the Job-Match Copilot demo."""
+"""FastAPI application for the Job-Match Copilot demo (section-wise counterfactuals)."""
+
 from __future__ import annotations
 from typing import Any, Dict
 from fastapi import FastAPI, HTTPException
@@ -8,7 +9,7 @@ from core.parse_resume import parse_resume
 from core.parse_job import parse_job
 from core.reason_llm import evaluate_requirements
 from core.score import compute_match_score
-from core.counterfactual import generate_counterfactuals
+from core.counterfactual import generate_counterfactuals_by_section
 from core.policy import decide_action
 
 from .schemas import (
@@ -17,7 +18,7 @@ from .schemas import (
     RequirementResult,
 )
 
-app = FastAPI(title="Job-Match Copilot API", version="0.2.0")
+app = FastAPI(title="Job-Match Copilot API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,10 +52,10 @@ def _load_job(req: ScoreRequest) -> Dict[str, Any]:
 def score_match(request: ScoreRequest) -> ScoreResponse:
     resume = _load_resume(request)
     job = _load_job(request)
-    requirements = job.get("requirements", [])
-    if not requirements:
+    reqs = job.get("requirements", [])
+    if not reqs:
         raise HTTPException(status_code=422, detail="No requirements provided")
-    evaluations = evaluate_requirements(requirements, resume)
+    evaluations = evaluate_requirements(reqs, resume)
     eval_models = [RequirementResult(**ev) for ev in evaluations]
     score_dict = compute_match_score(evaluations)
     return ScoreResponse(score=score_dict["score"], confidence=score_dict["confidence"], evaluations=eval_models)
@@ -63,16 +64,25 @@ def score_match(request: ScoreRequest) -> ScoreResponse:
 def counterfactual(request: ScoreRequest) -> CounterfactualResponse:
     resume = _load_resume(request)
     job = _load_job(request)
-    evaluations = evaluate_requirements(job.get("requirements", []), resume)
-    suggestions = generate_counterfactuals(evaluations, resume)
-    return CounterfactualResponse(suggestions=suggestions)
+    reqs = job.get("requirements", [])
+    if not reqs:
+        raise HTTPException(status_code=422, detail="No requirements provided")
+    evaluations = evaluate_requirements(reqs, resume)
+
+    sectioned, flat = generate_counterfactuals_by_section(evaluations, resume, job)
+    return CounterfactualResponse(suggestions_by_section=sectioned, suggestions=flat)
 
 @app.post("/action", response_model=ActionResponse)
 def action_recommendation(request: ScoreRequest) -> ActionResponse:
     resume = _load_resume(request)
     job = _load_job(request)
-    evaluations = evaluate_requirements(job.get("requirements", []), resume)
+    reqs = job.get("requirements", [])
+    if not reqs:
+        raise HTTPException(status_code=422, detail="No requirements provided")
+    evaluations = evaluate_requirements(reqs, resume)
     score_dict = compute_match_score(evaluations)
-    suggestions = generate_counterfactuals(evaluations, resume)
-    action = decide_action(score_dict["score"], score_dict["confidence"], suggestions)
+
+    # We still use flat suggestions to inform action policy; sectioning is only UI/UX
+    sectioned, flat = generate_counterfactuals_by_section(evaluations, resume, job)
+    action = decide_action(score_dict["score"], score_dict["confidence"], flat)
     return ActionResponse(**action)
