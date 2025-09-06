@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: job-match-api
+    env: python
+    plan: free
+    region: oregon
+    pythonVersion: 3.11.9
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
+    startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT
