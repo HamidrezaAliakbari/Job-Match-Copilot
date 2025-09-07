@@ -1,77 +1,111 @@
-import streamlit as st
+import os
+import json
 import requests
+import streamlit as st
 
-st.set_page_config(page_title="Job-Match Copilot", layout="wide")
-st.title("💼 Job-Match Copilot (MVP) — Section-wise suggestions")
+st.set_page_config(page_title="Job-Match Copilot — beta-02", layout="wide")
+st.title("💼 Job-Match Copilot (beta-02)")
 
-api_base = st.sidebar.text_input("API base", "http://127.0.0.1:8000")
-st.sidebar.markdown("Tip: start Uvicorn from the project root so relative paths work.")
+API_BASE_ENV = os.environ.get("API_BASE", "").rstrip("/")
+api_base = st.sidebar.text_input("API base", value=API_BASE_ENV or "http://127.0.0.1:8000").rstrip("/")
+
+with st.sidebar:
+    if st.button("Check API health"):
+        try:
+            r = requests.get(f"{api_base}/healthz", timeout=10)
+            st.success(r.json())
+        except Exception as e:
+            st.error(f"Health failed: {e}")
 
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Resume")
-    resume_text = st.text_area("Paste resume text (or leave blank if using file paths)")
-    resume_path = st.text_input("…or resume file path (e.g., data/samples/resume_sample.md)")
+    resume_text = st.text_area("Paste resume text (recommended for cloud)")
+    resume_path = st.text_input("…or resume file path (for local tests)")
 with col2:
     st.subheader("Job")
-    job_text = st.text_area("Paste job description (or leave blank if using file paths)")
-    job_path = st.text_input("…or job file path (e.g., data/samples/job_sample.md)")
+    job_text = st.text_area("Paste job description (recommended for cloud)")
+    job_path = st.text_input("…or job file path (for local tests)")
 
-if st.button("Ingest & Score", type="primary"):
-    payload = {}
+st.markdown("---")
+req_csv = st.text_input("Explicit requirements (comma-separated)", value="Python, scikit-learn")
+requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
+
+btn1, btn2, btn3 = st.columns([1,1,1])
+score_clicked = btn1.button("Ingest & Score", type="primary", use_container_width=True)
+counter_clicked = btn2.button("Counterfactuals", use_container_width=True)
+action_clicked = btn3.button("Action", use_container_width=True)
+
+def build_payload():
+    payload = {"requirements": requirements, "preferred": None}
     if resume_text.strip():
-        payload["resume"] = {
-            "summary": resume_text.split("\n", 3)[0] if resume_text else "",
-            "skills": [],
-            "experience_bullets": [l for l in resume_text.splitlines() if l.strip()],
-            "projects": [],
-            "education": [],
-        }
+        payload["resume_text"] = resume_text.strip()
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
-
     if job_text.strip():
-        payload["job"] = {
-            "title": "Job",
-            "requirements": [l.strip("-• ").strip() for l in job_text.splitlines() if l.strip()],
-            "preferred": [],
-        }
+        payload["job_text"] = job_text.strip()
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
+    return payload
 
-    if not payload:
-        st.error("Provide either resume/job text or file paths.")
+def post(path: str, body: dict, timeout=60):
+    url = f"{api_base}{path}"
+    r = requests.post(url, json=body, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+with st.expander("Request payload (read-only)"):
+    st.code(json.dumps(build_payload(), indent=2))
+
+if score_clicked:
+    payload = build_payload()
+    if not any(payload.get(k) for k in ("resume_text","resume_path","job_text","job_path")):
+        st.error("Provide at least resume text/path or job text/path.")
     else:
         try:
-            s = requests.post(f"{api_base}/score", json=payload, timeout=60).json()
-            st.success(f"Score: {s.get('score',0):.2f} | Confidence: {s.get('confidence',0):.2f}")
+            data = post("/score", payload)
+            st.success(f"Score: {data.get('score', 0):.2f} | Confidence: {data.get('confidence', 0):.2f}")
             st.subheader("Evaluations")
-            for ev in s.get("evaluations", []):
-                st.markdown(f"**{ev['requirement']}** — *{ev['status']}*")
-                for snip in ev.get("evidence", []):
-                    st.code(snip)
+            for ev in data.get("evaluations", []):
+                req = ev.get("requirement", "")
+                met = ev.get("met", False)
+                evidence = ev.get("evidence") or ""
+                conf = ev.get("confidence")
+                conf_str = "" if conf is None else f" — conf {conf:.2f}"
+                st.markdown(f"- **{req}** → {'✅ Met' if met else '❌ Not met'}{conf_str}")
+                if evidence:
+                    st.code(str(evidence))
+        except Exception as e:
+            st.error(f"Request failed: {e}")
 
-            st.subheader("Update requests by section")
-            cf = requests.post(f"{api_base}/counterfactual", json=payload, timeout=60).json()
-            by_sec = cf.get("suggestions_by_section", {}) or {}
-            order = ["summary","skills","experience","projects","education","courses"]
-            for sec in order:
-                items = by_sec.get(sec, [])
-                with st.expander(f"{sec.title()} ({len(items)})", expanded=(sec in ["summary","skills"])):
-                    if not items:
-                        st.caption("No suggestions for this section.")
-                    for sug in items:
-                        st.markdown(f"- **{sug.get('change_type','suggestion')}** → {sug.get('target_requirement','')}")
-                        if sug.get("before"):
-                            st.caption("Before"); st.code(sug["before"])
-                        if sug.get("after"):
-                            st.caption("After"); st.code(sug["after"])
-                        if sug.get("rationale"):
-                            st.caption("Why"); st.write(sug["rationale"])
+if counter_clicked:
+    payload = build_payload()
+    if not any(payload.get(k) for k in ("resume_text","resume_path","job_text","job_path")):
+        st.error("Provide at least resume text/path or job text/path.")
+    else:
+        try:
+            data = post("/counterfactual", payload)
+            st.subheader("Counterfactual suggestions")
+            suggs = data.get("suggestions", [])
+            if not suggs:
+                st.info("No suggestions returned.")
+            else:
+                for s in suggs:
+                    st.markdown(f"- {s if isinstance(s, str) else str(s)}")
+        except Exception as e:
+            st.error(f"Request failed: {e}")
 
-            st.subheader("Action")
-            act = requests.post(f"{api_base}/action", json=payload, timeout=60).json()
-            st.warning(f"Suggested action: **{act.get('decision','n/a')}**")
-            st.json(act.get("details", {}))
+if action_clicked:
+    payload = build_payload()
+    if not any(payload.get(k) for k in ("resume_text","resume_path","job_text","job_path")):
+        st.error("Provide at least resume text/path or job text/path.")
+    else:
+        try:
+            data = post("/action", payload)
+            st.subheader("Recommended action")
+            st.warning(f"**{data.get('action','n/a')}**")
+            if data.get("rationale"):
+                st.caption("Why")
+                st.write(str(data["rationale"]))
         except Exception as e:
             st.error(f"Request failed: {e}")

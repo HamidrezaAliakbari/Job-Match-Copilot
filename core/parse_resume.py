@@ -1,24 +1,21 @@
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict, List, Optional
 import re
 
-SECTION_KEYS = {
-    "summary": ["summary", "profile", "objective"],
-    "skills": ["skills", "technical skills"],
-    "experience": ["experience", "work experience", "professional experience", "employment"],
-    "education": ["education", "academic"],
-    "projects": ["projects", "personal projects", "research projects"],
-    "courses": ["courses", "relevant coursework", "coursework"],  # NEW
-}
-
 def _split_lines(text: str) -> List[str]:
-    return [ln.rstrip() for ln in text.splitlines()]
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-def _which_section(line_lower: str, current: str) -> str:
-    for sec, keys in SECTION_KEYS.items():
-        if any(k in line_lower for k in keys):
-            return sec
-    return current
+def _sectionize(lines: List[str]) -> dict:
+    sec_map = {"skills": [], "experience": [], "education": [], "projects": [], "other": []}
+    cur = "other"
+    for ln in lines:
+        low = ln.lower()
+        if "skill" in low:      cur = "skills";     continue
+        if "experience" in low or "work" in low: cur = "experience"; continue
+        if "education" in low:  cur = "education";  continue
+        if "project" in low:    cur = "projects";   continue
+        sec_map.setdefault(cur, []).append(ln)
+    return sec_map
 
 def _extract_skills(skill_lines: List[str]) -> List[str]:
     skills = []
@@ -26,41 +23,48 @@ def _extract_skills(skill_lines: List[str]) -> List[str]:
         parts = re.split(r"[•,;/\|]|\t|\s{2,}", ln)
         for p in parts:
             t = p.strip()
-            if t and 1 < len(t) <= 40:
+            if t and len(t) <= 40:
                 skills.append(t)
     seen, out = set(), []
     for s in skills:
-        k = s.lower()
-        if k not in seen:
-            seen.add(k); out.append(s)
+        key = s.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(s)
     return out[:128]
 
-def parse_resume(path: str) -> Dict:
-    with open(path, "r", encoding="utf-8") as f:
-        raw = f.read()
+def _extract_skills_from_free_text(text: str) -> List[str]:
+    parts = re.split(r"[,\u2022;|/]+|\s{2,}", text)
+    tokens: List[str] = []
+    for p in parts:
+        for t in re.split(r"\s*\+\s*", p.strip()):
+            if t:
+                tokens.append(t.strip())
+    out, seen = [], set()
+    for t in tokens:
+        key = t.lower()
+        if key not in seen and 1 < len(t) <= 40:
+            seen.add(key)
+            out.append(t)
+    return out[:128]
 
-    lines = [ln for ln in _split_lines(raw) if ln.strip()]
-    sections: Dict[str, List[str]] = {k: [] for k in SECTION_KEYS.keys()}
-    sections.setdefault("other", [])
+def parse_resume(path: Optional[str] = None, text: Optional[str] = None) -> Dict:
+    if text is None:
+        if not path:
+            raise ValueError("parse_resume: provide text or path")
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
 
-    current = "summary"  # default early lines treated as summary
-    for ln in lines:
-        low = ln.lower().strip()
-        new_sec = _which_section(low, current)
-        if new_sec != current:
-            current = new_sec
-            continue
-        # skip header lines that are just section names
-        if any(low.startswith(k) for ks in SECTION_KEYS.values() for k in ks):
-            continue
-        sections.setdefault(current, []).append(ln)
+    lines = _split_lines(text)
+    secs = _sectionize(lines)
+    skills = _extract_skills(secs.get("skills", []))
+    if not skills:
+        skills = _extract_skills_from_free_text(text)
 
     return {
-        "raw_text": raw,
-        "summary": " ".join(sections.get("summary", [])[:5]).strip(),
-        "skills": _extract_skills(sections.get("skills", [])),
-        "experience_bullets": [ln for ln in sections.get("experience", []) if ln.strip()][:256],
-        "projects": [ln for ln in sections.get("projects", []) if ln.strip()][:128],
-        "education": [ln for ln in sections.get("education", []) if ln.strip()][:64],
-        "courses": [ln for ln in sections.get("courses", []) if ln.strip()][:64],  # NEW
+        "raw_text": text,
+        "skills": skills,
+        "experience_bullets": secs.get("experience", []),
+        "projects": secs.get("projects", []),
+        "education": secs.get("education", []),
     }
