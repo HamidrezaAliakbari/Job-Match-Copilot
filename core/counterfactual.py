@@ -214,7 +214,7 @@ def _suggest_for_missing(req: str, section_hint: str) -> Dict:
 
 # -------- main --------
 
-def generate_counterfactuals_by_section(evals: List[Dict], resume: Dict, job: Dict) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
+def generate_counterfactuals(evals: List[Dict], resume: Dict, job: Dict) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
     """
     Return (sectioned_suggestions, flat_list).
 
