@@ -10,5 +10,5 @@ numpy==1.25.2
 # For testing
 pytest==7.4.4
 
-
+streamlit==1.49.1
 
