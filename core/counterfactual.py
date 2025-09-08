@@ -248,7 +248,6 @@ def generate_counterfactuals(evals: List[Dict], resume: Dict, job: Dict) -> Tupl
         sectioned.setdefault(sug["section"], []).append(sug)
         flat.append(sug)
 
-    # Optional: summary nudge only if we truly have a summary and none queued there
     if (resume.get("summary") or "") and not sectioned["summary"]:
         sectioned["summary"].append({
             "section": "summary",
