@@ -100,41 +100,46 @@ def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, A
     return r.json()
     
 def build_payload():
+    """
+    Build the JSON body expected by the API:
+      {
+        "resume": {skills, experience_bullets, projects, education, courses} OR "resume_path"
+        "job": {title, requirements, preferred} OR "job_path"
+        "requirements": [...], "preferred": [...]
+      }
+    """
     payload = {"requirements": requirements or None, "preferred": None}
 
-    # If the user pasted text, build minimal structured objects for the API
-    resume_obj = None
-    job_obj = None
-
+    # ---- RESUME ----
     if resume_text.strip():
-        # Minimal mapping: put pasted text into a single "experience" bullet
+        # Super-simple parser: treat the pasted resume as one experience bullet.
+        # (You can improve later by splitting lines and extracting skills)
         resume_obj = {
-            "skills": [],
+            "skills": [],  # keep empty unless you parse skills from text
             "experience_bullets": [resume_text.strip()],
             "projects": [],
             "education": [],
             "courses": [],
         }
+        payload["resume"] = resume_obj
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
 
+    # ---- JOB ----
     if job_text.strip():
-        # Minimal mapping: put pasted text into job requirements (single item)
+        # Minimal mapping: use pasted JD as a single requirement line
         job_obj = {
             "title": "Job",
             "requirements": [job_text.strip()],
             "preferred": [],
         }
+        payload["job"] = job_obj
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
 
-    if resume_obj:
-        payload["resume"] = resume_obj
-    if job_obj:
-        payload["job"] = job_obj
-
     # Drop Nones
     return {k: v for k, v in payload.items() if v is not None}
+
 
 
 # ----------------- HTTP -----------------
