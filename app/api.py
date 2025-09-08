@@ -17,6 +17,9 @@ from .schemas import (
     RequirementResult,
 )
 
+
+
+
 app = FastAPI(title="Job-Match Copilot API", version="beta-02")
 
 app.add_middleware(
@@ -27,12 +30,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/", include_in_schema=False)
+@app.get("/")                # <-- returns 200 OK
 def root():
-    # redirect to the interactive docs
-    return RedirectResponse("/docs")
+    return {"ok": True}
 
-@app.get("/healthz")
+@app.get("/healthz")         # <-- returns 200 OK
 def healthz():
     return {"status": "ok"}
 
