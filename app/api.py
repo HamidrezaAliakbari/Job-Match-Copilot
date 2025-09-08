@@ -11,6 +11,7 @@ from core.reason_llm import evaluate_requirements
 from core.score import compute_match_score
 from core.counterfactual import generate_counterfactuals
 from core.policy import decide_action
+from fastapi.responses import RedirectResponse, JSONResponse
 
 from .schemas import (
     ScoreRequest,
@@ -31,11 +32,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/", include_in_schema=False)
+def root():
+    # EITHER redirect to Swagger:
+    return RedirectResponse(url="/docs")
+
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     return {"status": "ok", "version": "beta-02"}
 
 # ------------------------- Helpers ------------------------
+
+
+# -------------------------- Routes ------------------------
+
+@app.post("/score", response_model=ScoreResponse)
+def score_match(request: ScoreRequest) -> ScoreResponse:
+    resume = _load_resume(request)
+    job = _load_job(request)
+
+    requirements = job.get("requirements") or []
+    if not requirements:
+        raise HTTPException(status_code=422, detail="No requirements provided")
+
+    evaluations = evaluate_requirements(requirements, resume)
+    eval_models = _normalize_evaluations(evaluations, resume)
+    score_dict = compute_match_score(evaluations)
+
+    return ScoreResponse(
+        score=float(score_dict["score"]),
+        confidence=float(score_dict["confidence"]),
+        evaluations=eval_models,
+    )
+
+@app.post("/counterfactual", response_model=CounterfactualResponse)
+def counterfactual(request: ScoreRequest) -> CounterfactualResponse:
+    resume = _load_resume(request)
+    job = _load_job(request)
+    evaluations = evaluate_requirements(job.get("requirements", []), resume)
+    suggestions = generate_counterfactuals(evaluations, resume)
+    if suggestions and not isinstance(suggestions[0], str):
+        suggestions = [str(s) for s in suggestions]
+    return CounterfactualResponse(suggestions=suggestions)
+
+@app.post("/action", response_model=ActionResponse)
+def action_recommendation(request: ScoreRequest) -> ActionResponse:
+    resume = _load_resume(request)
+    job = _load_job(request)
+    evaluations = evaluate_requirements(job.get("requirements", []), resume)
+    score_dict = compute_match_score(evaluations)
+    suggestions = generate_counterfactuals(evaluations, resume)
+    action = decide_action(score_dict["score"], score_dict["confidence"], suggestions)
+    if "decision" in action and "details" in action:
+        action = {"action": action["decision"], "rationale": str(action["details"])}
+    return ActionResponse(**action)
 
 def _load_resume(req: ScoreRequest) -> Dict[str, Any]:
     """Accept pre-parsed dict OR raw text OR file path."""
@@ -108,45 +158,3 @@ def _normalize_evaluations(evals_in: List[Dict[str, Any]], resume: Dict[str, Any
         )
     return out
 
-# -------------------------- Routes ------------------------
-
-@app.post("/score", response_model=ScoreResponse)
-def score_match(request: ScoreRequest) -> ScoreResponse:
-    resume = _load_resume(request)
-    job = _load_job(request)
-
-    requirements = job.get("requirements") or []
-    if not requirements:
-        raise HTTPException(status_code=422, detail="No requirements provided")
-
-    evaluations = evaluate_requirements(requirements, resume)
-    eval_models = _normalize_evaluations(evaluations, resume)
-    score_dict = compute_match_score(evaluations)
-
-    return ScoreResponse(
-        score=float(score_dict["score"]),
-        confidence=float(score_dict["confidence"]),
-        evaluations=eval_models,
-    )
-
-@app.post("/counterfactual", response_model=CounterfactualResponse)
-def counterfactual(request: ScoreRequest) -> CounterfactualResponse:
-    resume = _load_resume(request)
-    job = _load_job(request)
-    evaluations = evaluate_requirements(job.get("requirements", []), resume)
-    suggestions = generate_counterfactuals(evaluations, resume)
-    if suggestions and not isinstance(suggestions[0], str):
-        suggestions = [str(s) for s in suggestions]
-    return CounterfactualResponse(suggestions=suggestions)
-
-@app.post("/action", response_model=ActionResponse)
-def action_recommendation(request: ScoreRequest) -> ActionResponse:
-    resume = _load_resume(request)
-    job = _load_job(request)
-    evaluations = evaluate_requirements(job.get("requirements", []), resume)
-    score_dict = compute_match_score(evaluations)
-    suggestions = generate_counterfactuals(evaluations, resume)
-    action = decide_action(score_dict["score"], score_dict["confidence"], suggestions)
-    if "decision" in action and "details" in action:
-        action = {"action": action["decision"], "rationale": str(action["details"])}
-    return ActionResponse(**action)
