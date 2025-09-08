@@ -1,111 +1,240 @@
+# ui/streamlit_app.py
 import os
 import json
+from typing import Any, Dict, List, Optional, Union
+
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Job-Match Copilot — beta-02", layout="wide")
-st.title("💼 Job-Match Copilot (beta-02)")
+# ---------- Page ----------
+st.set_page_config(page_title="Job-Match Copilot — UI", layout="wide")
+st.title("💼 Job-Match Copilot (Render UI)")
 
-API_BASE_ENV = os.environ.get("API_BASE", "").rstrip("/")
-api_base = st.sidebar.text_input("API base", value=API_BASE_ENV or "http://127.0.0.1:8000").rstrip("/")
+# ---------- Production-safe API base ----------
+# Priority: secrets -> env var; DEBUG=1 enables sidebar override for local dev
+DEBUG = (st.secrets.get("DEBUG", os.environ.get("DEBUG", "0")) == "1")
 
-with st.sidebar:
-    if st.button("Check API health"):
-        try:
-            r = requests.get(f"{api_base}/healthz", timeout=10)
-            st.success(r.json())
-        except Exception as e:
-            st.error(f"Health failed: {e}")
+API_BASE = (
+    st.secrets.get("API_BASE")
+    or os.environ.get("API_BASE")
+)
 
-col1, col2 = st.columns(2)
-with col1:
+if DEBUG:
+    st.sidebar.caption("API base (debug)")
+    api_base = st.sidebar.text_input(
+        "Base URL", value=API_BASE or "http://127.0.0.1:8000"
+    ).rstrip("/")
+else:
+    api_base = (API_BASE or "").rstrip("/")
+
+if not api_base:
+    st.error(
+        "API_BASE is not configured. Set it in Streamlit Secrets or Env Vars.\n"
+        "Example: https://job-match-copilot.onrender.com"
+    )
+    st.stop()
+
+# Sidebar health check
+if st.sidebar.button("Check API health"):
+    try:
+        r = requests.get(f"{api_base}/healthz", timeout=10)
+        r.raise_for_status()
+        st.sidebar.success(r.json())
+    except Exception as e:
+        st.sidebar.error(f"Health failed: {e}")
+
+# ---------- Inputs ----------
+left, right = st.columns(2)
+
+with left:
     st.subheader("Resume")
-    resume_text = st.text_area("Paste resume text (recommended for cloud)")
-    resume_path = st.text_input("…or resume file path (for local tests)")
-with col2:
+    resume_text = st.text_area(
+        "Paste resume text (recommended on cloud)",
+        placeholder="Paste the resume text here…",
+        height=220,
+    )
+    resume_path = st.text_input(
+        "…or a resume file path (local dev only)",
+        placeholder="e.g., data/samples/resume_sample.md",
+    )
+
+with right:
     st.subheader("Job")
-    job_text = st.text_area("Paste job description (recommended for cloud)")
-    job_path = st.text_input("…or job file path (for local tests)")
+    job_text = st.text_area(
+        "Paste job description (recommended on cloud)",
+        placeholder="Paste the job description here…",
+        height=220,
+    )
+    job_path = st.text_input(
+        "…or a job file path (local dev only)",
+        placeholder="e.g., data/samples/job_sample.md",
+    )
 
 st.markdown("---")
-req_csv = st.text_input("Explicit requirements (comma-separated)", value="Python, scikit-learn")
+
+req_csv = st.text_input(
+    "Explicit requirements (comma-separated — optional)",
+    value="Python, FastAPI, AWS",
+    help="If provided, they are sent as 'requirements'. Leave blank to let backend extract them.",
+)
 requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
 
-btn1, btn2, btn3 = st.columns([1,1,1])
-score_clicked = btn1.button("Ingest & Score", type="primary", use_container_width=True)
-counter_clicked = btn2.button("Counterfactuals", use_container_width=True)
-action_clicked = btn3.button("Action", use_container_width=True)
+# ---------- Payload ----------
+def build_payload() -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"requirements": requirements or None, "preferred": None}
 
-def build_payload():
-    payload = {"requirements": requirements, "preferred": None}
     if resume_text.strip():
         payload["resume_text"] = resume_text.strip()
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
+
     if job_text.strip():
         payload["job_text"] = job_text.strip()
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
-    return payload
 
-def post(path: str, body: dict, timeout=60):
+    return {k: v for k, v in payload.items() if v is not None}
+
+with st.expander("Request payload (preview)"):
+    st.code(json.dumps(build_payload(), indent=2), language="json")
+
+# ---------- HTTP ----------
+def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
     url = f"{api_base}{path}"
     r = requests.post(url, json=body, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
-with st.expander("Request payload (read-only)"):
-    st.code(json.dumps(build_payload(), indent=2))
+# ---------- Buttons ----------
+b1, b2, b3 = st.columns([1, 1, 1])
+score_clicked = b1.button("Ingest & Score", type="primary", use_container_width=True)
+counter_clicked = b2.button("Counterfactuals", use_container_width=True)
+action_clicked = b3.button("Action", use_container_width=True)
 
+def ensure_inputs(p: Dict[str, Any]) -> Optional[str]:
+    if not any(p.get(k) for k in ("resume_text", "resume_path")):
+        return "Provide resume text (cloud) or a local file path."
+    if not any(p.get(k) for k in ("job_text", "job_path")):
+        return "Provide job description text (cloud) or a local file path."
+    return None
+
+# ---------- Render helpers ----------
+def render_evaluations(evals: List[Dict[str, Any]]) -> None:
+    for ev in evals:
+        req = ev.get("requirement", "")
+        status = ev.get("status", "Unknown")
+        evidence = ev.get("evidence", []) or []
+        conf = ev.get("confidence", None)
+
+        badge = {
+            "Met": "✅ Met",
+            "Partially met": "🟡 Partial",
+            "Partial": "🟡 Partial",
+            "Missing": "❌ Missing",
+        }.get(status, status)
+
+        conf_txt = f" · conf {conf:.2f}" if isinstance(conf, (int, float)) else ""
+        st.markdown(f"- **{req}** — {badge}{conf_txt}")
+        if evidence:
+            if isinstance(evidence, (list, tuple)):
+                for e in evidence:
+                    st.code(str(e))
+            else:
+                st.code(str(evidence))
+
+def render_counterfactuals(suggestions: Union[List[Any], Dict[str, Any]]) -> None:
+    # Supports section-wise dict or flat list
+    if isinstance(suggestions, dict):
+        for section, items in suggestions.items():
+            st.markdown(f"#### {section}")
+            if not items:
+                st.caption("No suggestions.")
+                continue
+            for s in items:
+                if isinstance(s, str):
+                    st.markdown(f"- {s}")
+                else:
+                    rule = s.get("rule", "suggestion")
+                    before = s.get("before", "")
+                    after = s.get("after", "")
+                    why = s.get("why", "")
+                    st.markdown(f"- **{rule}**")
+                    if before:
+                        st.caption("Before"); st.code(before)
+                    if after:
+                        st.caption("After"); st.code(after)
+                    if why:
+                        st.caption("Why"); st.write(why)
+    else:
+        items = suggestions or []
+        if not items:
+            st.caption("No suggestions.")
+        for s in items:
+            if isinstance(s, str):
+                st.markdown(f"- {s}")
+            else:
+                rule = s.get("rule", "suggestion")
+                before = s.get("before", "")
+                after = s.get("after", "")
+                why = s.get("why", "")
+                st.markdown(f"- **{rule}**")
+                if before:
+                    st.caption("Before"); st.code(before)
+                if after:
+                    st.caption("After"); st.code(after)
+                if why:
+                    st.caption("Why"); st.write(why)
+
+# ---------- Actions ----------
 if score_clicked:
     payload = build_payload()
-    if not any(payload.get(k) for k in ("resume_text","resume_path","job_text","job_path")):
-        st.error("Provide at least resume text/path or job text/path.")
+    err = ensure_inputs(payload)
+    if err:
+        st.error(err)
     else:
-        try:
-            data = post("/score", payload)
-            st.success(f"Score: {data.get('score', 0):.2f} | Confidence: {data.get('confidence', 0):.2f}")
-            st.subheader("Evaluations")
-            for ev in data.get("evaluations", []):
-                req = ev.get("requirement", "")
-                met = ev.get("met", False)
-                evidence = ev.get("evidence") or ""
-                conf = ev.get("confidence")
-                conf_str = "" if conf is None else f" — conf {conf:.2f}"
-                st.markdown(f"- **{req}** → {'✅ Met' if met else '❌ Not met'}{conf_str}")
-                if evidence:
-                    st.code(str(evidence))
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+        with st.spinner("Scoring…"):
+            try:
+                data = post_json("/score", payload)
+                score = data.get("score", 0.0)
+                conf = data.get("confidence", 0.0)
+                st.success(f"Score: **{score:.2f}** · Confidence: **{conf:.2f}**")
+                st.subheader("Evaluations")
+                render_evaluations(data.get("evaluations", []))
+            except Exception as e:
+                st.error(f"Score request failed: {e}")
 
 if counter_clicked:
     payload = build_payload()
-    if not any(payload.get(k) for k in ("resume_text","resume_path","job_text","job_path")):
-        st.error("Provide at least resume text/path or job text/path.")
+    err = ensure_inputs(payload)
+    if err:
+        st.error(err)
     else:
-        try:
-            data = post("/counterfactual", payload)
-            st.subheader("Counterfactual suggestions")
-            suggs = data.get("suggestions", [])
-            if not suggs:
-                st.info("No suggestions returned.")
-            else:
-                for s in suggs:
-                    st.markdown(f"- {s if isinstance(s, str) else str(s)}")
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+        with st.spinner("Generating counterfactuals…"):
+            try:
+                data = post_json("/counterfactual", payload)
+                st.subheader("Counterfactual suggestions")
+                render_counterfactuals(data.get("suggestions", []))
+            except Exception as e:
+                st.error(f"Counterfactual request failed: {e}")
 
 if action_clicked:
     payload = build_payload()
-    if not any(payload.get(k) for k in ("resume_text","resume_path","job_text","job_path")):
-        st.error("Provide at least resume text/path or job text/path.")
+    err = ensure_inputs(payload)
+    if err:
+        st.error(err)
     else:
-        try:
-            data = post("/action", payload)
-            st.subheader("Recommended action")
-            st.warning(f"**{data.get('action','n/a')}**")
-            if data.get("rationale"):
-                st.caption("Why")
-                st.write(str(data["rationale"]))
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+        with st.spinner("Recommending action…"):
+            try:
+                data = post_json("/action", payload)
+                decision = data.get("action") or data.get("decision") or "n/a"
+                st.subheader("Recommended action")
+                st.warning(f"**{decision}**")
+                rationale = data.get("rationale")
+                details = data.get("details")
+                if rationale:
+                    st.caption("Why"); st.write(str(rationale))
+                if details:
+                    st.caption("Details")
+                    st.write(details if isinstance(details, str) else json.dumps(details, indent=2))
+            except Exception as e:
+                st.error(f"Action request failed: {e}")
