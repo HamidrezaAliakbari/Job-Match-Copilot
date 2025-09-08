@@ -99,23 +99,43 @@ def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, A
     r.raise_for_status()
     return r.json()
     
-def build_payload() -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"requirements": requirements or None, "preferred": None}
+def build_payload():
+    payload = {"requirements": requirements or None, "preferred": None}
+
+    # If the user pasted text, build minimal structured objects for the API
+    resume_obj = None
+    job_obj = None
 
     if resume_text.strip():
-        payload["resume_text"] = resume_text.strip()
+        # Minimal mapping: put pasted text into a single "experience" bullet
+        resume_obj = {
+            "skills": [],
+            "experience_bullets": [resume_text.strip()],
+            "projects": [],
+            "education": [],
+            "courses": [],
+        }
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
 
     if job_text.strip():
-        payload["job_text"] = job_text.strip()
+        # Minimal mapping: put pasted text into job requirements (single item)
+        job_obj = {
+            "title": "Job",
+            "requirements": [job_text.strip()],
+            "preferred": [],
+        }
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
 
+    if resume_obj:
+        payload["resume"] = resume_obj
+    if job_obj:
+        payload["job"] = job_obj
+
+    # Drop Nones
     return {k: v for k, v in payload.items() if v is not None}
 
-with st.expander("Request payload (preview)"):
-    st.code(json.dumps(build_payload(), indent=2), language="json")
 
 # ----------------- HTTP -----------------
 def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
