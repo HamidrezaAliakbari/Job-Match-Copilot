@@ -1,22 +1,30 @@
-from __future__ import annotations
-from typing import Any, Dict, List, Optional
+# app/schemas.py
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-
-class ScoreRequest(BaseModel):
-    # Option A: direct dicts
-    resume: Optional[Dict[str, Any]] = None
-    job: Optional[Dict[str, Any]] = None
-    # Option B: file paths
-    resume_path: Optional[str] = None
-    job_path: Optional[str] = None
-    # Option C: direct requirement lists
-    requirements: Optional[List[str]] = None
-    preferred: Optional[List[str]] = None
 
 class RequirementResult(BaseModel):
     requirement: str
-    status: str
-    evidence: List[str] = Field(default_factory=list)
+    status: str                   # "Met" | "Partially met" | "Missing"
+    evidence: Optional[List[str]] = None
+    confidence: Optional[float] = None
+    section: Optional[str] = None
+
+class ScoreRequest(BaseModel):
+    # EITHER pass raw text…
+    resume_text: Optional[str] = Field(None, description="Raw resume text")
+    job_text: Optional[str] = Field(None, description="Raw job description text")
+
+    # …OR pass file paths that exist on the API container (usually not in cloud)
+    resume_path: Optional[str] = None
+    job_path: Optional[str] = None
+
+    # (Optional) if you already extracted structured dicts (not required)
+    resume: Optional[Dict[str, Any]] = None
+    job: Optional[Dict[str, Any]] = None
+
+    # Optional hints
+    requirements: Optional[List[str]] = None
+    preferred: Optional[List[str]] = None
 
 class ScoreResponse(BaseModel):
     score: float
@@ -24,11 +32,9 @@ class ScoreResponse(BaseModel):
     evaluations: List[RequirementResult]
 
 class CounterfactualResponse(BaseModel):
-    # New: section-wise suggestions
-    suggestions_by_section: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
-    # Back-compat (optional): flat list if you still want it
-    suggestions: List[Dict[str, Any]] = Field(default_factory=list)
+    suggestions: Any  # section-wise dict or list
 
 class ActionResponse(BaseModel):
-    decision: str
-    details: Dict[str, Any] = Field(default_factory=dict)
+    action: str
+    rationale: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
