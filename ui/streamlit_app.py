@@ -1,33 +1,38 @@
 # ui/streamlit_app.py
 import os
+import re
 import json
 from typing import Any, Dict, List, Optional, Union
 
 import requests
 import streamlit as st
 
+
+# ----------------- helpers: safe secrets/env -----------------
 def safe_secret(key: str, default=None):
+    """
+    Read from Streamlit secrets first (if present), else from env, else default.
+    Works on Render and locally.
+    """
     try:
         return st.secrets.get(key, os.environ.get(key, default))  # type: ignore[attr-defined]
     except Exception:
         return os.environ.get(key, default)
 
-API_PROTECT_HEADER = "X-Render-Secret"   # Render’s default header name
-API_SECRET = safe_secret("RENDER_API_SECRET", None)
 
-
-# ----------------- helpers: safe secrets -----------------
-
-
-# ----------------- page config -----------------
+# ----------------- configuration -----------------
 st.set_page_config(page_title="Job-Match Copilot — UI", layout="wide")
 st.title("💼 Job-Match Copilot (Render UI)")
 
-# ----------------- production-safe API base -----------------
-# Use env var API_BASE on Render. DEBUG=1 enables sidebar override for local dev.
+# API base: set as env var on Render UI service (recommended)
 DEBUG = (safe_secret("DEBUG", "0") == "1")
-API_BASE = safe_secret("API_BASE", None)
+API_BASE = safe_secret("API_BASE", None)  # e.g. https://job-match-copilot-api.onrender.com
 
+# Optional Render Protected Web Service header (only if you turned that on)
+API_PROTECT_HEADER = safe_secret("API_PROTECT_HEADER", "X-Render-Secret")
+API_PROTECT_TOKEN = safe_secret("RENDER_API_SECRET", None)
+
+# Allow overriding base in sidebar in DEBUG mode
 if DEBUG:
     st.sidebar.caption("API base (debug)")
     api_base = st.sidebar.text_input(
@@ -39,19 +44,27 @@ else:
 
 if not api_base:
     st.error(
-        "API_BASE is not configured. Set it as an Environment Variable on this UI service.\n"
-        "Example: https://job-match-copilot.onrender.com"
+        "API_BASE is not configured. Set it as an Environment Variable on this UI service.\n\n"
+        "Example value: https://job-match-copilot-api.onrender.com"
     )
     st.stop()
 
-# Sidebar health check
+# ----------------- sidebar: health check -----------------
+def _auth_headers() -> Dict[str, str]:
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if API_PROTECT_TOKEN:
+        headers[API_PROTECT_HEADER] = API_PROTECT_TOKEN
+    return headers
+
 if st.sidebar.button("Check API health"):
     try:
-        r = requests.get(f"{api_base}/healthz", timeout=10)
+        r = requests.get(f"{api_base}/healthz", headers=_auth_headers(), timeout=10)
         r.raise_for_status()
         st.sidebar.success(r.json())
     except Exception as e:
         st.sidebar.error(f"Health failed: {e}")
+
+st.sidebar.caption(f"API: {api_base}")
 
 # ----------------- inputs -----------------
 left, right = st.columns(2)
@@ -85,21 +98,83 @@ st.markdown("---")
 req_csv = st.text_input(
     "Explicit requirements (comma-separated — optional)",
     value="Python, FastAPI, AWS",
-    help="If provided, they are sent as 'requirements'. Leave blank to let the backend extract them.",
+    help="If provided, they are sent as 'requirements'. Leave blank to let the backend infer.",
 )
 requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
 
-# ----------------- payload -----------------
-def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
-    url = f"{api_base}{path}"
-    headers = {"Content-Type": "application/json"}
-    if API_SECRET:  # only add when protection is enabled
-        headers[API_PROTECT_HEADER] = API_SECRET
-    r = requests.post(url, json=body, headers=headers, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-    
-def build_payload():
+
+# ----------------- minimal parsing helpers (safe for demo) -----------------
+_BULLET_RE = re.compile(r"^\s*([\-*•–]|(\d+\.)|(\d+\)))\s+")
+
+def _extract_bullets(text: str, max_items: int = 20) -> List[str]:
+    """
+    Try to turn a block of text into a list of bullets using common bullet/number patterns.
+    Fallback: take non-empty lines. Keep items shortish.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    items: List[str] = []
+    for ln in lines:
+        if not ln:
+            continue
+        if _BULLET_RE.match(ln) or ";" in ln:
+            # split on semicolons if user pasted "a; b; c"
+            parts = [p.strip(" •*-–\t") for p in re.split(r"[;•]", ln) if p.strip()]
+            for p in parts:
+                if 2 <= len(p) <= 300:
+                    items.append(p)
+        else:
+            # collect shortish lines as bullets too
+            if 2 <= len(ln) <= 300:
+                items.append(ln)
+        if len(items) >= max_items:
+            break
+    if not items and text.strip():
+        items = [text.strip()]
+    return items
+
+def _guess_skills_from_text(text: str, max_items: int = 15) -> List[str]:
+    """
+    Extremely light heuristic for demo purposes: pull comma/semicolon-separated short tokens
+    from lines containing 'Skills' or at the top of the text.
+    """
+    skills: List[str] = []
+    for ln in text.splitlines()[:10]:
+        if "skill" in ln.lower() or "," in ln or ";" in ln:
+            parts = re.split(r"[,\u2022;|/]+", ln)
+            for p in parts:
+                t = p.strip()
+                if 1 < len(t) <= 32 and any(ch.isalpha() for ch in t):
+                    # skip obviously long phrases
+                    if " " in t and len(t.split()) > 4:
+                        continue
+                    skills.append(t)
+    # dedupe preserve order
+    seen = set()
+    out: List[str] = []
+    for s in skills:
+        k = s.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(s)
+        if len(out) >= max_items:
+            break
+    return out
+
+def _extract_requirements(text: str, max_items: int = 25) -> List[str]:
+    """
+    Extract lines that look like requirements from job text.
+    Prefer bulleted/numbered lines; fallback to non-empty lines.
+    """
+    items = _extract_bullets(text, max_items=max_items)
+    # keep reasonably sized items
+    items = [it for it in items if 2 <= len(it) <= 300]
+    if not items and text.strip():
+        items = [text.strip()]
+    return items[:max_items]
+
+
+# ----------------- payload builders -----------------
+def build_payload() -> Dict[str, Any]:
     """
     Build the JSON body expected by the API:
       {
@@ -108,46 +183,54 @@ def build_payload():
         "requirements": [...], "preferred": [...]
       }
     """
-    payload = {"requirements": requirements or None, "preferred": None}
+    payload: Dict[str, Any] = {}
+    if requirements:
+        payload["requirements"] = requirements
+    payload["preferred"] = None  # keep explicit for now
 
     # ---- RESUME ----
     if resume_text.strip():
-        # Super-simple parser: treat the pasted resume as one experience bullet.
-        # (You can improve later by splitting lines and extracting skills)
-        resume_obj = {
-            "skills": [],  # keep empty unless you parse skills from text
-            "experience_bullets": [resume_text.strip()],
+        payload["resume"] = {
+            "skills": _guess_skills_from_text(resume_text),
+            "experience_bullets": _extract_bullets(resume_text),
             "projects": [],
             "education": [],
             "courses": [],
         }
-        payload["resume"] = resume_obj
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
 
     # ---- JOB ----
     if job_text.strip():
-        # Minimal mapping: use pasted JD as a single requirement line
-        job_obj = {
+        payload["job"] = {
             "title": "Job",
-            "requirements": [job_text.strip()],
+            "requirements": _extract_requirements(job_text),
             "preferred": [],
         }
-        payload["job"] = job_obj
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
 
-    # Drop Nones
-    return {k: v for k, v in payload.items() if v is not None}
+    # Drop empty/None
+    return {k: v for k, v in payload.items() if v not in (None, [], "")}
 
+
+def has_inputs(p: Dict[str, Any]) -> bool:
+    """
+    New validation: require a resume (object or path) AND a job (object or path).
+    This matches the API you have live.
+    """
+    have_resume = bool(p.get("resume") or p.get("resume_path"))
+    have_job = bool(p.get("job") or p.get("job_path"))
+    return have_resume and have_job
 
 
 # ----------------- HTTP -----------------
 def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
     url = f"{api_base}{path}"
-    r = requests.post(url, json=body, timeout=timeout)
+    r = requests.post(url, json=body, headers=_auth_headers(), timeout=timeout)
     r.raise_for_status()
     return r.json()
+
 
 # ----------------- buttons -----------------
 b1, b2, b3 = st.columns([1, 1, 1])
@@ -155,12 +238,10 @@ score_clicked = b1.button("Ingest & Score", type="primary", use_container_width=
 counter_clicked = b2.button("Counterfactuals", use_container_width=True)
 action_clicked = b3.button("Action", use_container_width=True)
 
-def ensure_inputs(p: Dict[str, Any]) -> Optional[str]:
-    if not any(p.get(k) for k in ("resume_text", "resume_path")):
-        return "Provide resume text (cloud) or a local file path."
-    if not any(p.get(k) for k in ("job_text", "job_path")):
-        return "Provide job description text (cloud) or a local file path."
-    return None
+# Show payload for transparency
+with st.expander("Request payload (read-only)"):
+    st.code(json.dumps(build_payload(), indent=2), language="json")
+
 
 # ----------------- render helpers -----------------
 def render_evaluations(evals: List[Dict[str, Any]]) -> None:
@@ -228,12 +309,12 @@ def render_counterfactuals(suggestions: Union[List[Any], Dict[str, Any]]) -> Non
                 if why:
                     st.caption("Why"); st.write(why)
 
+
 # ----------------- actions -----------------
 if score_clicked:
     payload = build_payload()
-    err = ensure_inputs(payload)
-    if err:
-        st.error(err)
+    if not has_inputs(payload):
+        st.error("Please provide a resume (text or file) **and** a job description (text or file).")
     else:
         with st.spinner("Scoring…"):
             try:
@@ -248,9 +329,8 @@ if score_clicked:
 
 if counter_clicked:
     payload = build_payload()
-    err = ensure_inputs(payload)
-    if err:
-        st.error(err)
+    if not has_inputs(payload):
+        st.error("Please provide a resume (text or file) **and** a job description (text or file).")
     else:
         with st.spinner("Generating counterfactuals…"):
             try:
@@ -262,9 +342,8 @@ if counter_clicked:
 
 if action_clicked:
     payload = build_payload()
-    err = ensure_inputs(payload)
-    if err:
-        st.error(err)
+    if not has_inputs(payload):
+        st.error("Please provide a resume (text or file) **and** a job description (text or file).")
     else:
         with st.spinner("Recommending action…"):
             try:
@@ -281,4 +360,3 @@ if action_clicked:
                     st.write(details if isinstance(details, str) else json.dumps(details, indent=2))
             except Exception as e:
                 st.error(f"Action request failed: {e}")
-                
