@@ -6,30 +6,37 @@ from typing import Any, Dict, List, Optional, Union
 import requests
 import streamlit as st
 
-# ---------- Page ----------
+# ----------------- helpers: safe secrets -----------------
+def safe_secret(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Return Streamlit secret if available; otherwise env var; otherwise default.
+    Never raises if secrets.toml is missing."""
+    try:
+        # Accessing st.secrets may raise if there's no secrets.toml
+        return st.secrets.get(key, os.environ.get(key, default))  # type: ignore[attr-defined]
+    except Exception:
+        return os.environ.get(key, default)
+
+# ----------------- page config -----------------
 st.set_page_config(page_title="Job-Match Copilot — UI", layout="wide")
 st.title("💼 Job-Match Copilot (Render UI)")
 
-# ---------- Production-safe API base ----------
-# Priority: secrets -> env var; DEBUG=1 enables sidebar override for local dev
-DEBUG = (st.secrets.get("DEBUG", os.environ.get("DEBUG", "0")) == "1")
-
-API_BASE = (
-    st.secrets.get("API_BASE")
-    or os.environ.get("API_BASE")
-)
+# ----------------- production-safe API base -----------------
+# Use env var API_BASE on Render. DEBUG=1 enables sidebar override for local dev.
+DEBUG = (safe_secret("DEBUG", "0") == "1")
+API_BASE = safe_secret("API_BASE", None)
 
 if DEBUG:
     st.sidebar.caption("API base (debug)")
     api_base = st.sidebar.text_input(
-        "Base URL", value=API_BASE or "http://127.0.0.1:8000"
+        "Base URL",
+        value=(API_BASE or "http://127.0.0.1:8000"),
     ).rstrip("/")
 else:
     api_base = (API_BASE or "").rstrip("/")
 
 if not api_base:
     st.error(
-        "API_BASE is not configured. Set it in Streamlit Secrets or Env Vars.\n"
+        "API_BASE is not configured. Set it as an Environment Variable on this UI service.\n"
         "Example: https://job-match-copilot.onrender.com"
     )
     st.stop()
@@ -43,7 +50,7 @@ if st.sidebar.button("Check API health"):
     except Exception as e:
         st.sidebar.error(f"Health failed: {e}")
 
-# ---------- Inputs ----------
+# ----------------- inputs -----------------
 left, right = st.columns(2)
 
 with left:
@@ -75,11 +82,11 @@ st.markdown("---")
 req_csv = st.text_input(
     "Explicit requirements (comma-separated — optional)",
     value="Python, FastAPI, AWS",
-    help="If provided, they are sent as 'requirements'. Leave blank to let backend extract them.",
+    help="If provided, they are sent as 'requirements'. Leave blank to let the backend extract them.",
 )
 requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
 
-# ---------- Payload ----------
+# ----------------- payload -----------------
 def build_payload() -> Dict[str, Any]:
     payload: Dict[str, Any] = {"requirements": requirements or None, "preferred": None}
 
@@ -98,14 +105,14 @@ def build_payload() -> Dict[str, Any]:
 with st.expander("Request payload (preview)"):
     st.code(json.dumps(build_payload(), indent=2), language="json")
 
-# ---------- HTTP ----------
+# ----------------- HTTP -----------------
 def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
     url = f"{api_base}{path}"
     r = requests.post(url, json=body, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
-# ---------- Buttons ----------
+# ----------------- buttons -----------------
 b1, b2, b3 = st.columns([1, 1, 1])
 score_clicked = b1.button("Ingest & Score", type="primary", use_container_width=True)
 counter_clicked = b2.button("Counterfactuals", use_container_width=True)
@@ -118,7 +125,7 @@ def ensure_inputs(p: Dict[str, Any]) -> Optional[str]:
         return "Provide job description text (cloud) or a local file path."
     return None
 
-# ---------- Render helpers ----------
+# ----------------- render helpers -----------------
 def render_evaluations(evals: List[Dict[str, Any]]) -> None:
     for ev in evals:
         req = ev.get("requirement", "")
@@ -143,7 +150,6 @@ def render_evaluations(evals: List[Dict[str, Any]]) -> None:
                 st.code(str(evidence))
 
 def render_counterfactuals(suggestions: Union[List[Any], Dict[str, Any]]) -> None:
-    # Supports section-wise dict or flat list
     if isinstance(suggestions, dict):
         for section, items in suggestions.items():
             st.markdown(f"#### {section}")
@@ -185,7 +191,7 @@ def render_counterfactuals(suggestions: Union[List[Any], Dict[str, Any]]) -> Non
                 if why:
                     st.caption("Why"); st.write(why)
 
-# ---------- Actions ----------
+# ----------------- actions -----------------
 if score_clicked:
     payload = build_payload()
     err = ensure_inputs(payload)
