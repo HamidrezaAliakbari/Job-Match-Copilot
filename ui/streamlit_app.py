@@ -6,15 +6,18 @@ from typing import Any, Dict, List, Optional, Union
 import requests
 import streamlit as st
 
-# ----------------- helpers: safe secrets -----------------
-def safe_secret(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Return Streamlit secret if available; otherwise env var; otherwise default.
-    Never raises if secrets.toml is missing."""
+def safe_secret(key: str, default=None):
     try:
-        # Accessing st.secrets may raise if there's no secrets.toml
         return st.secrets.get(key, os.environ.get(key, default))  # type: ignore[attr-defined]
     except Exception:
         return os.environ.get(key, default)
+
+API_PROTECT_HEADER = "X-Render-Secret"   # Render’s default header name
+API_SECRET = safe_secret("RENDER_API_SECRET", None)
+
+
+# ----------------- helpers: safe secrets -----------------
+
 
 # ----------------- page config -----------------
 st.set_page_config(page_title="Job-Match Copilot — UI", layout="wide")
@@ -87,6 +90,15 @@ req_csv = st.text_input(
 requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
 
 # ----------------- payload -----------------
+def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
+    url = f"{api_base}{path}"
+    headers = {"Content-Type": "application/json"}
+    if API_SECRET:  # only add when protection is enabled
+        headers[API_PROTECT_HEADER] = API_SECRET
+    r = requests.post(url, json=body, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+    
 def build_payload() -> Dict[str, Any]:
     payload: Dict[str, Any] = {"requirements": requirements or None, "preferred": None}
 
@@ -244,3 +256,4 @@ if action_clicked:
                     st.write(details if isinstance(details, str) else json.dumps(details, indent=2))
             except Exception as e:
                 st.error(f"Action request failed: {e}")
+                
