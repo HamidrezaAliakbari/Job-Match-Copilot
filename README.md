@@ -1,4 +1,4 @@
-# Job‑Match Copilot
+# Job‑Match Copilot - Running on beta.
 
 This repository contains a self‑contained starter implementation of a “Job‑Match Copilot.”  The goal of the project is to help recruiters and candidates understand how well a resume matches a job description, with transparent evidence and actionable next steps.  It demonstrates a small end‑to‑end stack using Python and FastAPI.
 
