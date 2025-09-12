@@ -65,6 +65,9 @@ if st.sidebar.button("Check API health"):
         st.sidebar.error(f"Health failed: {e}")
 
 st.sidebar.caption(f"API: {api_base}")
+st.sidebar.markdown(
+    '[Developed by Hamidreza Aliakbari](https://www.linkedin.com/in/hamidreza-aliakbarikhouei-a04727190/)',
+)
 
 # ----------------- inputs -----------------
 left, right = st.columns(2)
