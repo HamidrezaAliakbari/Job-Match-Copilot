@@ -1,36 +1,23 @@
+# core/score.py
 from __future__ import annotations
 from typing import Dict, List
 
 def compute_match_score(evaluations: List[Dict]) -> Dict[str, float]:
     """
-    Simple calibrated score:
-      Met = 1.0
-      Partial = 0.5
-      Missing = 0
-    score = average over requirements
-    confidence trends with coverage & fraction of non-missing.
+    evaluations: list of {'requirement': str, 'status': 'Met'|'Partially met'|'Missing', 'bucket': 'minimum'|'preferred'|'other'}
     """
-    if not evaluations:
-        return {"score": 0.0, "confidence": 0.5}
+    weights = {"minimum": 1.0, "preferred": 0.5, "other": 0.25}
+    status_val = {"Met": 1.0, "Partially met": 0.5, "Missing": 0.0}
 
-    total = 0.0
-    non_missing = 0
+    total_w = 0.0
+    achieved = 0.0
     for ev in evaluations:
-        st = (ev.get("status") or "").lower()
-        if st == "met":
-            total += 1.0
-            non_missing += 1
-        elif st == "partial":
-            total += 0.5
-            non_missing += 1
-        else:
-            total += 0.0
+        bucket = ev.get("bucket", "minimum")
+        w = weights.get(bucket, 0.5)
+        total_w += w
+        achieved += w * status_val.get(ev.get("status", "Missing"), 0.0)
 
-    score = total / len(evaluations)
-
-    # confidence: higher when more items are at least Partial and evidence density is strong
-    coverage = non_missing / len(evaluations)
-    # clip to [0.0, 0.99]
-    confidence = max(0.4, min(0.99, 0.55 + 0.4 * coverage))
-
-    return {"score": round(score, 2), "confidence": round(confidence, 2)}
+    score = achieved / total_w if total_w > 0 else 0.0
+    # simple confidence: share of items that are Met/Partial
+    conf = sum(1 for e in evaluations if e.get("status") in ("Met", "Partially met")) / max(1, len(evaluations))
+    return {"score": round(score, 2), "confidence": round(conf, 2)}
