@@ -190,6 +190,7 @@ def sectionize_resume_ui(text: str) -> Dict[str, Any]:
             seen.add(k); uniq.append(s)
     buckets["skills"] = uniq
 
+    # return summary separately (we'll fold it into experience_bullets before sending)
     return {
         "summary": " ".join(summary_chunks).strip(),
         **buckets,
@@ -268,7 +269,7 @@ def sectionize_job_ui(text: str, explicit_requirements=None, explicit_preferred=
                 buf.append(raw)
             continue
 
-        # We ignore "about" for scoring on purpose
+        # Ignore "about" for scoring
 
     if bucket == "minimum":
         flush(reqs)
@@ -291,38 +292,93 @@ def sectionize_job_ui(text: str, explicit_requirements=None, explicit_preferred=
 
 
 # ----------------- payload builders -----------------
+ALLOWED_RESUME_KEYS = {"skills", "experience_bullets", "projects", "education", "courses"}
+
+def sanitize_resume_for_api(res: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Your API model likely has Pydantic with extra=forbid and expects ONLY:
+      skills, experience_bullets, projects, education, courses
+
+    - If 'summary' exists, prepend it into experience_bullets.
+    - Drop any unknown keys (like 'summary').
+    - Drop empty strings and trim whitespace.
+    """
+    out: Dict[str, List[str]] = {k: [] for k in ALLOWED_RESUME_KEYS}
+
+    # fold summary into experience_bullets
+    summary = (res.get("summary") or "").strip()
+    if summary:
+        out["experience_bullets"].append(summary)
+
+    def _clean_list(vals: List[str]) -> List[str]:
+        cleaned: List[str] = []
+        for v in vals or []:
+            t = (v or "").strip()
+            if t:
+                cleaned.append(t)
+        return cleaned
+
+    for k in ALLOWED_RESUME_KEYS:
+        out[k].extend(_clean_list(res.get(k) or []))
+
+    # de-dupe each list but keep order
+    for k in out:
+        seen, uniq = set(), []
+        for item in out[k]:
+            key = item.lower()
+            if key not in seen:
+                seen.add(key); uniq.append(item)
+        out[k] = uniq
+
+    return out
+
 def build_payload() -> Dict[str, Any]:
     """
     Build the JSON body expected by the API:
       {
-        "resume": {summary, skills, experience_bullets, projects, education, courses} OR "resume_path"
+        "resume": {skills, experience_bullets, projects, education, courses} OR "resume_path"
         "job": {title, requirements, preferred} OR "job_path"
-        "requirements": [...], "preferred": [...]
+        "requirements": [...],  # optional
       }
     """
     payload: Dict[str, Any] = {}
+
     if requirements:
-        payload["requirements"] = requirements
-    payload["preferred"] = None  # keep explicit for now
+        payload["requirements"] = [r for r in requirements if r.strip()]
 
     # ---- RESUME ----
     if resume_text.strip():
-        payload["resume"] = sectionize_resume_ui(resume_text)
+        # sectionize first (with summary), then sanitize for strict API schema
+        res_ui = sectionize_resume_ui(resume_text)
+        payload["resume"] = sanitize_resume_for_api(res_ui)
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
 
     # ---- JOB ----
     if job_text.strip():
-        payload["job"] = sectionize_job_ui(
+        job_obj = sectionize_job_ui(
             job_text,
             explicit_requirements=None,   # set to `requirements` if you want sidebar to override
             explicit_preferred=None
         )
+        # clean empties
+        job_obj["requirements"] = [r for r in job_obj.get("requirements", []) if r.strip()]
+        job_obj["preferred"] = [p for p in job_obj.get("preferred", []) if p.strip()]
+        # drop empty title if blank
+        if not job_obj.get("title", "").strip():
+            job_obj["title"] = "Job"
+        payload["job"] = job_obj
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
 
-    # Drop empty/None
-    return {k: v for k, v in payload.items() if v not in (None, [], "", {})}
+    # Drop empty/None/{} to avoid confusing the API
+    clean: Dict[str, Any] = {}
+    for k, v in payload.items():
+        if v in (None, "", [], {}):
+            continue
+        clean[k] = v
+
+    return clean
 
 
 def has_inputs(p: Dict[str, Any]) -> bool:
@@ -338,7 +394,16 @@ def has_inputs(p: Dict[str, Any]) -> bool:
 def post_json(path: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
     url = f"{api_base}{path}"
     r = requests.post(url, json=body, headers=_auth_headers(), timeout=timeout)
-    r.raise_for_status()
+    # Surface detailed backend errors in the UI
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        detail = ""
+        try:
+            detail = json.dumps(r.json(), indent=2)
+        except Exception:
+            detail = r.text
+        raise requests.HTTPError(f"{e}\n---- Backend response ----\n{detail}") from None
     return r.json()
 
 
@@ -435,7 +500,7 @@ if score_clicked:
                 st.subheader("Evaluations")
                 render_evaluations(data.get("evaluations", []))
             except Exception as e:
-                st.error(f"Score request failed: {e}")
+                st.error(f"Score request failed:\n{e}")
 
 if counter_clicked:
     payload = build_payload()
@@ -448,7 +513,7 @@ if counter_clicked:
                 st.subheader("Counterfactual suggestions")
                 render_counterfactuals(data.get("suggestions", []))
             except Exception as e:
-                st.error(f"Counterfactual request failed: {e}")
+                st.error(f"Counterfactual request failed:\n{e}")
 
 if action_clicked:
     payload = build_payload()
@@ -469,4 +534,4 @@ if action_clicked:
                     st.caption("Details")
                     st.write(details if isinstance(details, str) else json.dumps(details, indent=2))
             except Exception as e:
-                st.error(f"Action request failed: {e}")
+                st.error(f"Action request failed:\n{e}")
