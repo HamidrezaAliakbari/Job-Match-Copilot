@@ -22,7 +22,7 @@ def safe_secret(key: str, default=None):
 
 # ----------------- configuration -----------------
 st.set_page_config(page_title="Job-Match Copilot — UI", layout="wide")
-st.title("💼 Job-Match Copilot (Render UI)")
+st.title("💼 Job-Match Copilot")
 
 # API base: set as env var on Render UI service (recommended)
 DEBUG = (safe_secret("DEBUG", "0") == "1")
