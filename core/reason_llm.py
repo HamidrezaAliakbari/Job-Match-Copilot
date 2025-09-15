@@ -1,8 +1,11 @@
+# core/reason_llm.py
 from __future__ import annotations
 from typing import Dict, List, Tuple, Optional
 import re
 
-# ---------- normalization ----------
+# ---------------------------
+# Normalization helpers
+# ---------------------------
 _ws = re.compile(r"\s+")
 _punct = re.compile(r"[^\w\s]+")
 
@@ -12,204 +15,229 @@ def norm(s: str) -> str:
     s = _ws.sub(" ", s).strip()
     return s
 
-# ---------- header detection (same logic as parsers) ----------
-HEADER_LINE_RE = re.compile(r"^\s*[A-Za-z].{0,80}:?\s*$")
-BULLET_RE = re.compile(r"^\s*(?:[-*•–]|(\d+[\.\)]))\s+")
-HEADER_ALIASES = [
-    r"minimum\s+qualifications?",
-    r"basic\s+qualifications?",
-    r"preferred\s+qualifications?",
-    r"nice\s*to\s*have",
-    r"responsibilit(y|ies)",
-    r"about\s+the\s+(job|role|team|company)",
-    r"duties",
-    r"requirements?",
-    r"description",
-    r"overview",
-    r"job\s*title",
-]
+def tokens(s: str) -> List[str]:
+    return [t for t in norm(s).split() if t]
 
-def _looks_like_header(ln: str) -> bool:
-    if not ln:
-        return False
-    if BULLET_RE.match(ln):
-        return False
-    low = ln.lower().rstrip(":").strip()
-    if HEADER_LINE_RE.match(ln) and (ln.endswith(":") or len(low.split()) <= 6):
-        return True
-    for p in HEADER_ALIASES:
-        if re.fullmatch(p, low):
-            return True
-    return False
+def jaccard(a: List[str], b: List[str]) -> float:
+    sa, sb = set(a), set(b)
+    if not sa or not sb: 
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
 
-# ---------- lexicon (yours) ----------
-LEX = {
-    "collects & organizes patient data": [
-        "chart abstraction", "data collection", "collect data", "patient data",
-        "ehr", "emr", "redcap", "electronic data capture", "edc", "data entry"
-    ],
-    "maintains records and databases": [
-        "database", "records management", "redcap", "lims", "excel", "access",
-        "data quality", "data integrity", "data cleaning"
-    ],
-    "uses software programs to generate graphs and reports": [
-        "graphs", "reports", "tableau", "power bi", "excel charts", "matplotlib",
-        "seaborn", "reporting", "visualization", "r markdown", "spss", "stata"
-    ],
-    "managing the recruitment, screening, and enrollment of research patients": [
-        "recruit", "recruitment", "screen", "screening", "prescreen", "enroll",
-        "enrollment", "eligibility", "inclusion criteria", "exclusion criteria",
-        "study visits", "participant outreach"
-    ],
-    "obtains patient study data from medical records, physicians, etc.": [
-        "ehr", "emr", "medical records", "chart review", "physician notes",
-        "epic", "cerner"
-    ],
-    "conducts library searches": [
-        "pubmed", "google scholar", "systematic review", "literature review",
-        "database search", "mesh", "endnote", "zotero"
-    ],
-    "verifies accuracy of study forms": [
-        "case report form", "crf", "source data verification", "sdv",
-        "data verification", "quality check", "qa qc", "query resolution"
-    ],
-    "updates study forms per protocol": [
-        "protocol", "crf", "case report form", "study amendment", "version control"
-    ],
-    "documents patient visits and procedures": [
-        "document visit", "visit notes", "procedure note", "source documentation",
-        "clinic visit", "follow up visit", "study visit"
-    ],
-    "assists with regulatory binders and qa/qc procedures": [
-        "regulatory binder", "essential documents", "delegation log", "training log",
-        "qa qc", "quality assurance", "monitoring visit", "audit"
-    ],
-    "assists with interviewing study subjects": [
-        "interview participants", "semi structured interview", "qualitative",
-        "survey administration", "questionnaire administration"
-    ],
-    "administers psychiatric assessments and scores questionnaires": [
-        "phq 9", "gad 7", "ham d", "ham a", "bdi", "bai", "assessment battery",
-        "validated questionnaires", "scoring"
-    ],
-    "provides basic explanation of study and in some cases obtains informed consent from": [
-        "informed consent", "consenting", "consent form", "assent"
-    ],
-    "performs study procedures, which may include neuromodulation (tms and tes, training will be offered by study team), phlebotomy (a course is offered at umn), etc.": [
-        "tms", "transcranial magnetic", "t es", "tes", "neuromodulation",
-        "eeg", "mri", "phlebotomy", "blood draw", "venipuncture"
-    ],
-    "assists with study regulatory submissions": [
-        "irb submission", "continuing review", "amendment", "adverse event report",
-        "protocol deviation", "redaction", "consent template"
-    ],
-    "ensuring compliance with the umn irb and other federal and institutional guidelines": [
-        "irb", "hipaa", "gcp", "citi training", "regulatory compliance"
-    ],
-    "writes consent forms": [
-        "consent template", "consent form drafting", "icf", "consent language"
-    ],
-    "verifies subject inclusion/exclusion criteria": [
-        "eligibility", "inclusion criteria", "exclusion criteria", "pre screen"
-    ],
-    "periodic special projects, such as a grant submission or a journal article submission": [
-        "grant submission", "nih", "nsf", "manuscript", "journal submission",
-        "coauthor", "first author", "conference abstract"
-    ],
-    "performs administrative support duties as required": [
-        "scheduling", "calendar", "email correspondence", "procurement", "ordering",
-        "meeting minutes", "documentation"
-    ],
+# ---------------------------
+# Heuristics & lexicons
+# ---------------------------
+HEADER_LINES = {
+    "summary","professional summary","experience","work experience","employment",
+    "projects","project","education","skills","certifications","publications",
+    "about the role","responsibilities","minimum qualifications","preferred qualifications",
+    "requirements","job title","objective"
 }
-ALIASES = {"crf": "case report form", "sdv": "source data verification"}
 
-# ---------- build resume corpus ----------
+# CRC / ML-ish synonyms (normalized substrings)
+LEX: Dict[str, List[str]] = {
+    "python": ["python"],
+    "fastapi": ["fastapi"],
+    "aws": ["aws","amazon web services","ecs","fargate","s3","ec2","lambda"],
+    "scikit-learn": ["scikit learn","sklearn","scikit-learn"],
+    "pytorch": ["pytorch","torch"],
+    "tensorflow": ["tensorflow","tf","keras"],
+    "docker": ["docker","container"],
+    "kubernetes": ["kubernetes","k8s"],
+    "ci/cd": ["ci cd","ci/cd","continuous integration","continuous delivery","github actions","gitlab ci"],
+    "hipaa": ["hipaa","phi","protected health information"],
+    "irb": ["irb","institutional review board","human subjects"],
+    "data visualization": ["data visualization","dash","plotly","power bi","tableau","matplotlib","seaborn"],
+    # degrees
+    "master’s degree": ["masters degree","master s degree","ms degree","m s","m.sc","msc","master of science"],
+    "bachelor’s degree": ["bachelors degree","bachelor s degree","bs degree","b s","b.sc","bsc","undergraduate"],
+    # frameworks / api
+    "api deployment": ["deploy api","rest api","production api","uvicorn","gunicorn"],
+}
+
+ALIASES = {
+    "sklearn": "scikit-learn",
+    "ci cd": "ci/cd",
+    "ms": "master’s degree",
+    "bs": "bachelor’s degree",
+}
+
+def to_lex_key(req: str) -> Optional[str]:
+    """Pick a lexicon key by max token overlap."""
+    rq = norm(req)
+    rq_t = set(tokens(rq))
+    best, score = None, 0
+    for k in LEX.keys():
+        ov = len(rq_t & set(k.split()))
+        if ov > score:
+            best, score = k, ov
+    return best
+
+# ---------------------------
+# Build resume corpus (line, section)
+# ---------------------------
 def build_resume_corpus(resume: Dict) -> List[Tuple[str, str]]:
     corpus: List[Tuple[str, str]] = []
+
     def add_many(lines: List[str], section: str):
         for ln in lines or []:
-            ln = (ln or "").strip()
-            if ln:
-                corpus.append((ln, section))
+            if not ln: 
+                continue
+            ln_clean = ln.strip()
+            # Drop pure headers
+            if norm(ln_clean) in HEADER_LINES:
+                continue
+            # Keep lines that carry signal
+            if len(ln_clean) >= 2:
+                corpus.append((ln_clean, section))
+
     if resume.get("summary"):
-        parts = [p.strip() for p in re.split(r"[;\.\n]", str(resume["summary"])) if p.strip()]
-        add_many(parts, "summary")
+        # split summary into sentence-like chunks
+        summ = [s.strip() for s in re.split(r"[.\n;]", resume["summary"]) if s.strip()]
+        add_many(summ, "summary")
+
     add_many(resume.get("experience_bullets") or [], "experience")
     add_many(resume.get("projects") or [], "projects")
     add_many(resume.get("education") or [], "education")
     add_many(resume.get("courses") or [], "courses")
+
+    # skills as atomic entries
     for sk in resume.get("skills") or []:
-        corpus.append((str(sk).strip(), "skills"))
+        s = sk.strip()
+        if s and norm(s) not in HEADER_LINES:
+            corpus.append((s, "skills"))
+
     return corpus
 
-# ---------- evidence ----------
-def find_evidence(corpus: List[Tuple[str, str]], needles: List[str]) -> List[str]:
-    out: List[str] = []
-    for snip, _sec in corpus:
-        n = norm(snip)
-        if any(ned in n for ned in needles):
-            out.append(snip)
-            if len(out) >= 3:
-                break
-    return out
+# ---------------------------
+# Evidence search
+# ---------------------------
+def _needle_list(req: str) -> List[str]:
+    """Build prioritized needle list: (synonyms -> exact phrases -> content words)."""
+    needles: List[str] = []
+    # 1) synonyms
+    key = to_lex_key(req) or req.lower()
+    syns = LEX.get(key, [])
+    needles.extend([norm(ALIASES.get(s, s)) for s in syns])
+    # 2) exact normalized phrase
+    rq_norm = norm(req)
+    if rq_norm and rq_norm not in needles:
+        needles.append(rq_norm)
+    # 3) salient content words (length >= 3)
+    words = [w for w in rq_norm.split() if len(w) >= 3]
+    for w in words:
+        if w not in needles:
+            needles.append(w)
+    return needles
 
-# ---------- main ----------
-def evaluate_requirements(
-    requirements: List[str],
-    resume: Dict,
-    preferred: Optional[List[str]] = None
-) -> List[Dict]:
+def _match_strength(snip: str, needles: List[str]) -> float:
+    """Score evidence strength for a single snippet."""
+    n_snip = norm(snip)
+    # exact full-phrase match is strongest
+    full_phrases = [n for n in needles if " " in n]
+    for p in full_phrases:
+        if p in n_snip:
+            return 1.0
+    # strong token overlap
+    overlap = jaccard(tokens(n_snip), [t for n in needles for t in n.split()])
+    if overlap >= 0.45:
+        return 0.75
+    # any keyword hit
+    if any(n in n_snip for n in needles):
+        return 0.55
+    return 0.0
+
+def find_evidence(corpus: List[Tuple[str, str]], req: str, k: int = 3) -> List[str]:
+    needles = _needle_list(req)
+    scored: List[Tuple[float, str]] = []
+    for snip, section in corpus:
+        # downweight if the line looks like a header inside corpus (paranoia)
+        is_headerish = norm(snip) in HEADER_LINES
+        base = _match_strength(snip, needles)
+        if base <= 0:
+            continue
+        if is_headerish:
+            base *= 0.5
+        # Slight boost if from experience/projects (vs. skills-only)
+        if section in {"experience", "projects"}:
+            base += 0.05
+        scored.append((base, snip))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [snip for _, snip in scored[:k]]
+
+# ---------------------------
+# Degree helpers (tiny)
+# ---------------------------
+DEGREE_PATTERNS = {
+    "master’s degree": re.compile(r"\b(masters?|m\.?s\.?|msc|master of science)\b", re.I),
+    "bachelor’s degree": re.compile(r"\b(bachelors?|b\.?s\.?|bsc|bachelor of science)\b", re.I),
+}
+
+def has_degree(resume: Dict, degree_key: str) -> bool:
+    pat = DEGREE_PATTERNS.get(degree_key)
+    if not pat:
+        return False
+    for line in (resume.get("education") or []):
+        if pat.search(line):
+            return True
+    # sometimes degree mentioned in summary/experience
+    for blk in (resume.get("experience_bullets") or []) + ([resume.get("summary")] if resume.get("summary") else []):
+        if blk and pat.search(blk):
+            return True
+    return False
+
+# ---------------------------
+# Main API
+# ---------------------------
+def evaluate_requirements(requirements: List[str], resume: Dict, preferred: Optional[List[str]] = None) -> List[Dict]:
     """
-    Returns list of {requirement, status, evidence, bucket}.
-    Skips header-like 'requirements' entirely (they won't affect score).
+    Returns list of:
+    {
+      "requirement": str,
+      "status": "Met"|"Partial"|"Missing",
+      "evidence": [str, ...],
+      "type": "required"|"preferred"
+    }
     """
     preferred = preferred or []
     corpus = build_resume_corpus(resume)
     corpus_text = " \n ".join([norm(s) for s, _ in corpus])
 
-    def eval_one(req: str) -> Optional[Dict]:
-        req_clean = (req or "").strip()
-        if not req_clean:
-            return None
-        if _looks_like_header(req_clean):
-            return None  # <--- crucial: drop headers
-        req_norm = norm(req_clean)
+    out: List[Dict] = []
 
-        # lexicon key
-        key = None
-        if req_clean.lower() in LEX:
-            key = req_clean.lower()
-        else:
-            tokens = set(req_norm.split())
-            best_key, best_overlap = None, 0
-            for k in LEX.keys():
-                ov = len(tokens.intersection(set(k.split())))
-                if ov > best_overlap:
-                    best_key, best_overlap = k, ov
-            key = best_key
+    def eval_one(req: str, req_type: str) -> Dict:
+        req_clean = req.strip()
+        # degree shortcuts
+        key = to_lex_key(req_clean) or ""
+        if key in ("master’s degree", "bachelor’s degree"):
+            have = has_degree(resume, key)
+            return {
+                "requirement": req_clean,
+                "status": "Met" if have else "Missing",
+                "evidence": [e for e in (resume.get("education") or []) if e][:2] if have else [],
+                "type": req_type,
+            }
 
-        synonyms = [norm(ALIASES.get(s, s)) for s in (LEX.get(key) or [])]
-
-        evidence = find_evidence(corpus, synonyms) if synonyms else []
-        if evidence:
+        ev = find_evidence(corpus, req_clean)
+        if ev:
             status = "Met"
         else:
-            req_terms = [t for t in req_norm.split() if len(t) > 3]
+            # weak signal = any content term shows up
+            req_terms = [t for t in tokens(req_clean) if len(t) >= 4]
             weak = any(t in corpus_text for t in req_terms)
             status = "Partial" if weak else "Missing"
-            if weak and not evidence:
-                evidence = find_evidence(corpus, req_terms)
-        return {"requirement": req_clean, "status": status, "evidence": evidence}
+            if weak:
+                # harvest a couple weak lines to show why partial
+                ev = find_evidence(corpus, " ".join(req_terms))[:2]
 
-    results: List[Dict] = []
-    for r in (requirements or []):
-        rec = eval_one(r)
-        if rec:
-            rec["bucket"] = "minimum"
-            results.append(rec)
-    for r in (preferred or []):
-        rec = eval_one(r)
-        if rec:
-            rec["bucket"] = "preferred"
-            results.append(rec)
-    return results
+        return {"requirement": req_clean, "status": status, "evidence": ev, "type": req_type}
+
+    for r in requirements or []:
+        if r and norm(r) not in HEADER_LINES:
+            out.append(eval_one(r, "required"))
+    for r in preferred or []:
+        if r and norm(r) not in HEADER_LINES:
+            out.append(eval_one(r, "preferred"))
+
+    return out
