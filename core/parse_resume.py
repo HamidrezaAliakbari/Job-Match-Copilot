@@ -1,70 +1,58 @@
-from __future__ import annotations
+# core/parse_resume.py
 from typing import Dict, List, Optional
-import re
+import os
+from .sectionizer import split_sections, coalesce_bullets
 
-def _split_lines(text: str) -> List[str]:
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+def _first_n(items: List[str], n: int) -> List[str]:
+    return items[:n] if items else []
 
-def _sectionize(lines: List[str]) -> dict:
-    sec_map = {"skills": [], "experience": [], "education": [], "projects": [], "other": []}
-    cur = "other"
-    for ln in lines:
-        low = ln.lower()
-        if "skill" in low:      cur = "skills";     continue
-        if "experience" in low or "work" in low: cur = "experience"; continue
-        if "education" in low:  cur = "education";  continue
-        if "project" in low:    cur = "projects";   continue
-        sec_map.setdefault(cur, []).append(ln)
-    return sec_map
+def parse_resume(resume_path: Optional[str] = None, *, resume_text: Optional[str] = None) -> Dict:
+    """
+    Return a normalized resume dict:
+      {
+        skills: List[str],
+        experience_bullets: List[str],
+        projects: List[str],
+        education: List[str],
+        courses: List[str]
+      }
+    Uses sectionizer to avoid treating section headers as bullets.
+    """
+    if resume_text is None and resume_path:
+        if not os.path.exists(resume_path):
+            raise FileNotFoundError(f"Resume file not found: {resume_path}")
+        with open(resume_path, "r", encoding="utf-8", errors="ignore") as f:
+            resume_text = f.read()
 
-def _extract_skills(skill_lines: List[str]) -> List[str]:
-    skills = []
-    for ln in skill_lines:
-        parts = re.split(r"[•,;/\|]|\t|\s{2,}", ln)
-        for p in parts:
-            t = p.strip()
-            if t and len(t) <= 40:
-                skills.append(t)
-    seen, out = set(), []
-    for s in skills:
-        key = s.lower()
-        if key not in seen:
-            seen.add(key)
-            out.append(s)
-    return out[:128]
+    if not resume_text:
+        # minimal empty skeleton
+        return {
+            "skills": [],
+            "experience_bullets": [],
+            "projects": [],
+            "education": [],
+            "courses": [],
+        }
 
-def _extract_skills_from_free_text(text: str) -> List[str]:
-    parts = re.split(r"[,\u2022;|/]+|\s{2,}", text)
-    tokens: List[str] = []
-    for p in parts:
-        for t in re.split(r"\s*\+\s*", p.strip()):
-            if t:
-                tokens.append(t.strip())
-    out, seen = [], set()
-    for t in tokens:
-        key = t.lower()
-        if key not in seen and 1 < len(t) <= 40:
-            seen.add(key)
-            out.append(t)
-    return out[:128]
+    sections = split_sections(resume_text)
 
-def parse_resume(path: Optional[str] = None, text: Optional[str] = None) -> Dict:
-    if text is None:
-        if not path:
-            raise ValueError("parse_resume: provide text or path")
-        with open(path, "r", encoding="utf-8") as f:
-            text = f.read()
+    # Pull by canonical keys; fall back to body
+    skills = sections.get("skills", [])
+    experience = sections.get("experience", []) or sections.get("body", [])
+    projects = sections.get("projects", [])
+    education = sections.get("education", [])
+    courses = sections.get("courses", [])
 
-    lines = _split_lines(text)
-    secs = _sectionize(lines)
-    skills = _extract_skills(secs.get("skills", []))
-    if not skills:
-        skills = _extract_skills_from_free_text(text)
+    # Safety: ensure content is bullet-like and headers are already stripped
+    experience = coalesce_bullets(experience)
+    projects = coalesce_bullets(projects)
+    education = coalesce_bullets(education)
+    courses = coalesce_bullets(courses)
 
     return {
-        "raw_text": text,
-        "skills": skills,
-        "experience_bullets": secs.get("experience", []),
-        "projects": secs.get("projects", []),
-        "education": secs.get("education", []),
+        "skills": _first_n(skills, 50),
+        "experience_bullets": _first_n(experience, 200),
+        "projects": _first_n(projects, 100),
+        "education": _first_n(education, 100),
+        "courses": _first_n(courses, 100),
     }
