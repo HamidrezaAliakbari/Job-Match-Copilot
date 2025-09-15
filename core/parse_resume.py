@@ -1,58 +1,61 @@
 # core/parse_resume.py
-from typing import Dict, List, Optional
+from __future__ import annotations
+from typing import Dict, List, Optional, Any
 import os
-from .sectionizer import split_sections, coalesce_bullets
 
-def _first_n(items: List[str], n: int) -> List[str]:
-    return items[:n] if items else []
+def _read_text_file(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
-def parse_resume(resume_path: Optional[str] = None, *, resume_text: Optional[str] = None) -> Dict:
+def _normalize_list(x: Any) -> List[str]:
+    if not x:
+        return []
+    if isinstance(x, (list, tuple)):
+        return [str(i).strip() for i in x if str(i).strip()]
+    return [str(x).strip()]
+
+def parse_resume(
+    path: Optional[str] = None,
+    text: Optional[str] = None,
+    obj: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    Return a normalized resume dict:
-      {
-        skills: List[str],
-        experience_bullets: List[str],
-        projects: List[str],
-        education: List[str],
-        courses: List[str]
-      }
-    Uses sectionizer to avoid treating section headers as bullets.
+    Flexible resume loader:
+      - If 'obj' provided, normalize and return
+      - Else if 'text' provided, create a minimal resume object
+      - Else if 'path' provided, read file and create minimal object
+    Always returns:
+      {skills, experience_bullets, projects, education, courses}
     """
-    if resume_text is None and resume_path:
-        if not os.path.exists(resume_path):
-            raise FileNotFoundError(f"Resume file not found: {resume_path}")
-        with open(resume_path, "r", encoding="utf-8", errors="ignore") as f:
-            resume_text = f.read()
+    if obj and not isinstance(obj, dict):
+        raise ValueError("resume 'obj' must be a dict if provided")
 
-    if not resume_text:
-        # minimal empty skeleton
+    if obj:
+        skills = _normalize_list(obj.get("skills"))
+        exp    = _normalize_list(obj.get("experience_bullets"))
+        projs  = _normalize_list(obj.get("projects"))
+        edu    = _normalize_list(obj.get("education"))
+        courses= _normalize_list(obj.get("courses"))
         return {
-            "skills": [],
-            "experience_bullets": [],
-            "projects": [],
-            "education": [],
-            "courses": [],
+            "skills": skills,
+            "experience_bullets": exp,
+            "projects": projs,
+            "education": edu,
+            "courses": courses,
         }
 
-    sections = split_sections(resume_text)
+    raw = text
+    if (raw is None or not str(raw).strip()) and path:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Resume file not found: {path}")
+        raw = _read_text_file(path)
 
-    # Pull by canonical keys; fall back to body
-    skills = sections.get("skills", [])
-    experience = sections.get("experience", []) or sections.get("body", [])
-    projects = sections.get("projects", [])
-    education = sections.get("education", [])
-    courses = sections.get("courses", [])
-
-    # Safety: ensure content is bullet-like and headers are already stripped
-    experience = coalesce_bullets(experience)
-    projects = coalesce_bullets(projects)
-    education = coalesce_bullets(education)
-    courses = coalesce_bullets(courses)
-
+    raw = (raw or "").strip()
+    # Minimal, safe defaults if only raw text available
     return {
-        "skills": _first_n(skills, 50),
-        "experience_bullets": _first_n(experience, 200),
-        "projects": _first_n(projects, 100),
-        "education": _first_n(education, 100),
-        "courses": _first_n(courses, 100),
+        "skills": [],
+        "experience_bullets": [raw] if raw else [],
+        "projects": [],
+        "education": [],
+        "courses": [],
     }
