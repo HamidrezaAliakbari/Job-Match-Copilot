@@ -1,37 +1,53 @@
+# core/score.py
 from __future__ import annotations
-from typing import Dict, List
+from typing import List, Dict
 
-def compute_match_score(evaluations: List[Dict]) -> Dict:
+STATUS_WEIGHT = {
+    "Met": 1.0,
+    "Partial": 0.6,   # a bit more generous than 0.5
+    "Partially met": 0.6,
+    "Missing": 0.0,
+}
+
+TYPE_WEIGHT = {
+    "required": 1.0,
+    "preferred": 0.5,  # preferred counts, but half as much
+}
+
+def _ev_confidence(ev: List[str], status: str) -> float:
+    """Rough confidence heuristic from evidence volume + status."""
+    if status == "Met":
+        return 0.9 if len(ev) >= 2 else 0.8
+    if status.startswith("Partial"):
+        return 0.6 if ev else 0.5
+    return 0.35 if ev else 0.25
+
+def compute_match_score(evals: List[Dict]) -> Dict:
     """
-    Weighted score:
-      - For 'minimum' bucket: Met = 1.0, Partial = 0.5, Missing = 0.0
-      - For 'preferred' bucket: Met = 0.5, Partial = 0.25, Missing = 0.0
-    Headers are not present (filtered upstream), so denominator is total count actually scored.
-    Confidence: proportion of items that had any evidence lines, clipped [0.3..0.95]
+    Compute overall score in [0,1] with preferred vs required weighting and a confidence.
     """
-    if not evaluations:
-        return {"score": 0.0, "confidence": 0.4}
+    if not evals:
+        return {"score": 0.0, "confidence": 0.5}
 
-    weights = {
-        "minimum": {"Met": 1.0, "Partial": 0.5, "Missing": 0.0},
-        "preferred": {"Met": 0.5, "Partial": 0.25, "Missing": 0.0},
-    }
+    num_req = sum(1 for e in evals if e.get("type") == "required")
+    num_pref = sum(1 for e in evals if e.get("type") == "preferred")
 
-    numer = 0.0
-    denom = 0.0
-    evid_cnt = 0
-    for ev in evaluations:
-        bucket = ev.get("bucket", "minimum")
-        status = ev.get("status", "Missing")
-        wmap = weights.get(bucket, weights["minimum"])
-        numer += wmap.get(status, 0.0)
-        denom += 1.0
-        evid = ev.get("evidence") or []
-        if isinstance(evid, list) and len(evid) > 0:
-            evid_cnt += 1
+    denom = (num_req * TYPE_WEIGHT["required"]) + (num_pref * TYPE_WEIGHT["preferred"])
+    if denom <= 0:
+        denom = len(evals)  # fallback
 
-    score = (numer / denom) if denom else 0.0
-    conf = evid_cnt / denom if denom else 0.0
-    # keep confidence in a pleasant range for UI
-    conf = max(0.3, min(0.95, conf))
-    return {"score": round(score, 2), "confidence": round(conf, 2)}
+    total = 0.0
+    confs = []
+
+    for e in evals:
+        status = e.get("status", "Missing")
+        ev = e.get("evidence") or []
+        etype = e.get("type", "required")
+        s = STATUS_WEIGHT.get(status, 0.0)
+        w = TYPE_WEIGHT.get(etype, 1.0)
+        total += s * w
+        confs.append(_ev_confidence(ev, status))
+
+    score = max(0.0, min(1.0, total / denom))
+    confidence = sum(confs) / len(confs) if confs else 0.6
+    return {"score": round(score, 2), "confidence": round(confidence, 2)}
