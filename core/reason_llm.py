@@ -2,9 +2,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Optional
 import re
 
-# ---------------------------
-# Text normalization helpers (unchanged)
-# ---------------------------
+# ---------- normalization ----------
 _ws = re.compile(r"\s+")
 _punct = re.compile(r"[^\w\s]+")
 
@@ -14,22 +12,9 @@ def norm(s: str) -> str:
     s = _ws.sub(" ", s).strip()
     return s
 
-def contains_any(hay: str, needles: List[str]) -> bool:
-    low = norm(hay)
-    return any(n in low for n in needles)
-
-def any_in_any(snips: List[str], needles: List[str]) -> bool:
-    for s in snips:
-        if contains_any(s, needles):
-            return True
-    return False
-
-# ---------------------------
-# Header detection (NEW)
-# ---------------------------
-BULLET_RE = re.compile(r"^\s*(?:[-*•–]|(\d+[\.\)]))\s+")
+# ---------- header detection (same logic as parsers) ----------
 HEADER_LINE_RE = re.compile(r"^\s*[A-Za-z].{0,80}:?\s*$")
-
+BULLET_RE = re.compile(r"^\s*(?:[-*•–]|(\d+[\.\)]))\s+")
 HEADER_ALIASES = [
     r"minimum\s+qualifications?",
     r"basic\s+qualifications?",
@@ -41,6 +26,7 @@ HEADER_ALIASES = [
     r"requirements?",
     r"description",
     r"overview",
+    r"job\s*title",
 ]
 
 def _looks_like_header(ln: str) -> bool:
@@ -56,9 +42,7 @@ def _looks_like_header(ln: str) -> bool:
             return True
     return False
 
-# ---------------------------
-# CRC clinical lexicon (yours, unchanged)
-# ---------------------------
+# ---------- lexicon (yours) ----------
 LEX = {
     "collects & organizes patient data": [
         "chart abstraction", "data collection", "collect data", "patient data",
@@ -137,40 +121,28 @@ LEX = {
         "meeting minutes", "documentation"
     ],
 }
+ALIASES = {"crf": "case report form", "sdv": "source data verification"}
 
-ALIASES = {
-    "crf": "case report form",
-    "sdv": "source data verification",
-}
-
-# ---------------------------
-# Build a searchable resume corpus (unchanged)
-# ---------------------------
+# ---------- build resume corpus ----------
 def build_resume_corpus(resume: Dict) -> List[Tuple[str, str]]:
     corpus: List[Tuple[str, str]] = []
-
     def add_many(lines: List[str], section: str):
         for ln in lines or []:
-            if ln and ln.strip():
-                corpus.append((ln.strip(), section))
-
+            ln = (ln or "").strip()
+            if ln:
+                corpus.append((ln, section))
     if resume.get("summary"):
-        summ = [s.strip() for s in re.split(r"[;\.\n]", str(resume["summary"])) if s.strip()]
-        add_many(summ, "summary")
-
+        parts = [p.strip() for p in re.split(r"[;\.\n]", str(resume["summary"])) if p.strip()]
+        add_many(parts, "summary")
     add_many(resume.get("experience_bullets") or [], "experience")
     add_many(resume.get("projects") or [], "projects")
     add_many(resume.get("education") or [], "education")
     add_many(resume.get("courses") or [], "courses")
-
     for sk in resume.get("skills") or []:
         corpus.append((str(sk).strip(), "skills"))
-
     return corpus
 
-# ---------------------------
-# Evidence finding (unchanged)
-# ---------------------------
+# ---------- evidence ----------
 def find_evidence(corpus: List[Tuple[str, str]], needles: List[str]) -> List[str]:
     out: List[str] = []
     for snip, _sec in corpus:
@@ -181,32 +153,29 @@ def find_evidence(corpus: List[Tuple[str, str]], needles: List[str]) -> List[str
                 break
     return out
 
-# ---------------------------
-# Main: evaluate (enhanced, but backward-compatible)
-# ---------------------------
+# ---------- main ----------
 def evaluate_requirements(
     requirements: List[str],
     resume: Dict,
     preferred: Optional[List[str]] = None
 ) -> List[Dict]:
     """
-    Returns: [{'requirement', 'status': 'Met'|'Partial'|'Missing', 'evidence': [...], 'bucket': 'minimum'|'preferred'}]
-    - Skips obvious section headers so they are never scored.
-    - Tags each requirement with a bucket; 'preferred' is down-weighted later in scoring.
+    Returns list of {requirement, status, evidence, bucket}.
+    Skips header-like 'requirements' entirely (they won't affect score).
     """
     preferred = preferred or []
     corpus = build_resume_corpus(resume)
     corpus_text = " \n ".join([norm(s) for s, _ in corpus])
 
-    def eval_one(req: str) -> Dict:
+    def eval_one(req: str) -> Optional[Dict]:
         req_clean = (req or "").strip()
-        if not req_clean or _looks_like_header(req_clean):
-            # treat header-like strings as non-scorable; mark Missing with no penalty later via bucket if you prefer
-            return {"requirement": req_clean, "status": "Missing", "evidence": []}
-
+        if not req_clean:
+            return None
+        if _looks_like_header(req_clean):
+            return None  # <--- crucial: drop headers
         req_norm = norm(req_clean)
 
-        # pick lexicon entry (exact match or fuzzy overlap)
+        # lexicon key
         key = None
         if req_clean.lower() in LEX:
             key = req_clean.lower()
@@ -225,27 +194,22 @@ def evaluate_requirements(
         if evidence:
             status = "Met"
         else:
-            # weak match with content terms (ignore very short tokens)
             req_terms = [t for t in req_norm.split() if len(t) > 3]
-            weak_hit = any(t in corpus_text for t in req_terms)
-            status = "Partial" if weak_hit else "Missing"
-            if weak_hit and not evidence:
+            weak = any(t in corpus_text for t in req_terms)
+            status = "Partial" if weak else "Missing"
+            if weak and not evidence:
                 evidence = find_evidence(corpus, req_terms)
-
         return {"requirement": req_clean, "status": status, "evidence": evidence}
 
     results: List[Dict] = []
-
-    # Minimum bucket
     for r in (requirements or []):
         rec = eval_one(r)
-        rec["bucket"] = "minimum"
-        results.append(rec)
-
-    # Preferred bucket
+        if rec:
+            rec["bucket"] = "minimum"
+            results.append(rec)
     for r in (preferred or []):
         rec = eval_one(r)
-        rec["bucket"] = "preferred"
-        results.append(rec)
-
+        if rec:
+            rec["bucket"] = "preferred"
+            results.append(rec)
     return results
