@@ -1,9 +1,9 @@
 from __future__ import annotations
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import re
 
 # ---------------------------
-# Text normalization helpers
+# Text normalization helpers (unchanged)
 # ---------------------------
 _ws = re.compile(r"\s+")
 _punct = re.compile(r"[^\w\s]+")
@@ -25,10 +25,41 @@ def any_in_any(snips: List[str], needles: List[str]) -> bool:
     return False
 
 # ---------------------------
-# CRC clinical lexicon (synonyms)
+# Header detection (NEW)
+# ---------------------------
+BULLET_RE = re.compile(r"^\s*(?:[-*•–]|(\d+[\.\)]))\s+")
+HEADER_LINE_RE = re.compile(r"^\s*[A-Za-z].{0,80}:?\s*$")
+
+HEADER_ALIASES = [
+    r"minimum\s+qualifications?",
+    r"basic\s+qualifications?",
+    r"preferred\s+qualifications?",
+    r"nice\s*to\s*have",
+    r"responsibilit(y|ies)",
+    r"about\s+the\s+(job|role|team|company)",
+    r"duties",
+    r"requirements?",
+    r"description",
+    r"overview",
+]
+
+def _looks_like_header(ln: str) -> bool:
+    if not ln:
+        return False
+    if BULLET_RE.match(ln):
+        return False
+    low = ln.lower().rstrip(":").strip()
+    if HEADER_LINE_RE.match(ln) and (ln.endswith(":") or len(low.split()) <= 6):
+        return True
+    for p in HEADER_ALIASES:
+        if re.fullmatch(p, low):
+            return True
+    return False
+
+# ---------------------------
+# CRC clinical lexicon (yours, unchanged)
 # ---------------------------
 LEX = {
-    # requirement → synonyms/keywords (normalized substrings)
     "collects & organizes patient data": [
         "chart abstraction", "data collection", "collect data", "patient data",
         "ehr", "emr", "redcap", "electronic data capture", "edc", "data entry"
@@ -52,7 +83,7 @@ LEX = {
     ],
     "conducts library searches": [
         "pubmed", "google scholar", "systematic review", "literature review",
-        "database search", "meSH", "endnote", "zotero"
+        "database search", "mesh", "endnote", "zotero"
     ],
     "verifies accuracy of study forms": [
         "case report form", "crf", "source data verification", "sdv",
@@ -107,14 +138,13 @@ LEX = {
     ],
 }
 
-# Map some common short forms to long (for evidence search)
 ALIASES = {
     "crf": "case report form",
     "sdv": "source data verification",
 }
 
 # ---------------------------
-# Build a searchable resume corpus (snippets + section)
+# Build a searchable resume corpus (unchanged)
 # ---------------------------
 def build_resume_corpus(resume: Dict) -> List[Tuple[str, str]]:
     corpus: List[Tuple[str, str]] = []
@@ -125,8 +155,7 @@ def build_resume_corpus(resume: Dict) -> List[Tuple[str, str]]:
                 corpus.append((ln.strip(), section))
 
     if resume.get("summary"):
-        # split summary into sentences-ish chunks
-        summ = [s.strip() for s in re.split(r"[;\.\n]", resume["summary"]) if s.strip()]
+        summ = [s.strip() for s in re.split(r"[;\.\n]", str(resume["summary"])) if s.strip()]
         add_many(summ, "summary")
 
     add_many(resume.get("experience_bullets") or [], "experience")
@@ -134,14 +163,13 @@ def build_resume_corpus(resume: Dict) -> List[Tuple[str, str]]:
     add_many(resume.get("education") or [], "education")
     add_many(resume.get("courses") or [], "courses")
 
-    # skills as standalone tokens
     for sk in resume.get("skills") or []:
-        corpus.append((sk.strip(), "skills"))
+        corpus.append((str(sk).strip(), "skills"))
 
     return corpus
 
 # ---------------------------
-# Evidence finding
+# Evidence finding (unchanged)
 # ---------------------------
 def find_evidence(corpus: List[Tuple[str, str]], needles: List[str]) -> List[str]:
     out: List[str] = []
@@ -154,30 +182,35 @@ def find_evidence(corpus: List[Tuple[str, str]], needles: List[str]) -> List[str
     return out
 
 # ---------------------------
-# Main: evaluate requirements against resume
+# Main: evaluate (enhanced, but backward-compatible)
 # ---------------------------
-def evaluate_requirements(requirements: List[str], resume: Dict) -> List[Dict]:
+def evaluate_requirements(
+    requirements: List[str],
+    resume: Dict,
+    preferred: Optional[List[str]] = None
+) -> List[Dict]:
     """
-    Returns: List[{ requirement, status: Met|Partial|Missing, evidence: [snippets] }]
-    Matching is synonym-aware (CRC lexicon) and robust to casing/punct.
+    Returns: [{'requirement', 'status': 'Met'|'Partial'|'Missing', 'evidence': [...], 'bucket': 'minimum'|'preferred'}]
+    - Skips obvious section headers so they are never scored.
+    - Tags each requirement with a bucket; 'preferred' is down-weighted later in scoring.
     """
+    preferred = preferred or []
     corpus = build_resume_corpus(resume)
-    # Precompute normalized corpus text for quick Partial signals
     corpus_text = " \n ".join([norm(s) for s, _ in corpus])
 
-    results: List[Dict] = []
+    def eval_one(req: str) -> Dict:
+        req_clean = (req or "").strip()
+        if not req_clean or _looks_like_header(req_clean):
+            # treat header-like strings as non-scorable; mark Missing with no penalty later via bucket if you prefer
+            return {"requirement": req_clean, "status": "Missing", "evidence": []}
 
-    for req in requirements:
-        req_clean = req.strip()
         req_norm = norm(req_clean)
 
-        # 1) choose lexicon entry to use (exact key match or fuzzy key by overlap)
-        # try exact key
+        # pick lexicon entry (exact match or fuzzy overlap)
         key = None
         if req_clean.lower() in LEX:
             key = req_clean.lower()
         else:
-            # fuzzy: pick the lexicon key with the largest token overlap
             tokens = set(req_norm.split())
             best_key, best_overlap = None, 0
             for k in LEX.keys():
@@ -188,25 +221,31 @@ def evaluate_requirements(requirements: List[str], resume: Dict) -> List[Dict]:
 
         synonyms = [norm(ALIASES.get(s, s)) for s in (LEX.get(key) or [])]
 
-        # 2) strong match → Met (evidence found)
         evidence = find_evidence(corpus, synonyms) if synonyms else []
         if evidence:
             status = "Met"
         else:
-            # 3) weak/partial signals: look for any content words from the req itself
-            # remove stopwords-ish short words
+            # weak match with content terms (ignore very short tokens)
             req_terms = [t for t in req_norm.split() if len(t) > 3]
             weak_hit = any(t in corpus_text for t in req_terms)
             status = "Partial" if weak_hit else "Missing"
-
-            # try to harvest evidence lines even if not matched via synonyms
-            if weak_hit:
+            if weak_hit and not evidence:
                 evidence = find_evidence(corpus, req_terms)
 
-        results.append({
-            "requirement": req_clean,
-            "status": status,
-            "evidence": evidence,
-        })
+        return {"requirement": req_clean, "status": status, "evidence": evidence}
+
+    results: List[Dict] = []
+
+    # Minimum bucket
+    for r in (requirements or []):
+        rec = eval_one(r)
+        rec["bucket"] = "minimum"
+        results.append(rec)
+
+    # Preferred bucket
+    for r in (preferred or []):
+        rec = eval_one(r)
+        rec["bucket"] = "preferred"
+        results.append(rec)
 
     return results
