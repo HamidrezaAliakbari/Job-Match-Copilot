@@ -77,7 +77,7 @@ with left:
     resume_text = st.text_area(
         "Paste resume text (recommended on cloud)",
         placeholder="Paste the resume text here…",
-        height=220,
+        height=260,
     )
     resume_path = st.text_input(
         "…or a resume file path (local dev only)",
@@ -89,7 +89,7 @@ with right:
     job_text = st.text_area(
         "Paste job description (recommended on cloud)",
         placeholder="Paste the job description here…",
-        height=220,
+        height=260,
     )
     job_path = st.text_input(
         "…or a job file path (local dev only)",
@@ -106,74 +106,188 @@ req_csv = st.text_input(
 requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
 
 
-# ----------------- minimal parsing helpers (safe for demo) -----------------
-_BULLET_RE = re.compile(r"^\s*([\-*•–]|(\d+\.)|(\d+\)))\s+")
+# ----------------- UI sectionizers (client-only; scoring code remains unchanged) -----------------
+_WS = re.compile(r"\s+")
+_BULLET = re.compile(r"^\s*(?:[-*•–]|(\d{1,3}[.)]))\s+")
+_HDR_END = re.compile(r"[:：\-\s]*$")
 
-def _extract_bullets(text: str, max_items: int = 20) -> List[str]:
-    """
-    Try to turn a block of text into a list of bullets using common bullet/number patterns.
-    Fallback: take non-empty lines. Keep items shortish.
-    """
-    lines = [ln.strip() for ln in text.splitlines()]
-    items: List[str] = []
+def _n(s: str) -> str:
+    return _WS.sub(" ", (s or "").strip())
+
+def _is_resume_header(line: str) -> bool:
+    h = _HDR_END.sub("", (line or "").strip()).lower()
+    return h in {
+        "professional summary", "summary", "objective",
+        "experience", "work experience", "employment",
+        "projects", "selected projects",
+        "education", "academics",
+        "skills", "technical skills",
+        "courses", "coursework", "certifications", "certificates",
+    }
+
+def _map_resume_header(line: str) -> str:
+    h = _HDR_END.sub("", (line or "").strip()).lower()
+    if h in {"experience", "work experience", "employment"}:
+        return "experience_bullets"
+    if h in {"projects", "selected projects"}:
+        return "projects"
+    if h in {"education", "academics"}:
+        return "education"
+    if h in {"skills", "technical skills"}:
+        return "skills"
+    if h in {"courses", "coursework", "certifications", "certificates"}:
+        return "courses"
+    return "summary"
+
+def _take_bullets(lines: List[str]) -> List[str]:
+    out: List[str] = []
     for ln in lines:
         if not ln:
             continue
-        if _BULLET_RE.match(ln) or ";" in ln:
-            # split on semicolons if user pasted "a; b; c"
-            parts = [p.strip(" •*-–\t") for p in re.split(r"[;•]", ln) if p.strip()]
-            for p in parts:
-                if 2 <= len(p) <= 300:
-                    items.append(p)
+        if _BULLET.match(ln):
+            out.append(_BULLET.sub("", ln).strip())
         else:
-            # collect shortish lines as bullets too
-            if 2 <= len(ln) <= 300:
-                items.append(ln)
-        if len(items) >= max_items:
-            break
-    if not items and text.strip():
-        items = [text.strip()]
-    return items
-
-def _guess_skills_from_text(text: str, max_items: int = 15) -> List[str]:
-    """
-    Extremely light heuristic for demo purposes: pull comma/semicolon-separated short tokens
-    from lines containing 'Skills' or at the top of the text.
-    """
-    skills: List[str] = []
-    for ln in text.splitlines()[:10]:
-        if "skill" in ln.lower() or "," in ln or ";" in ln:
-            parts = re.split(r"[,\u2022;|/]+", ln)
-            for p in parts:
-                t = p.strip()
-                if 1 < len(t) <= 32 and any(ch.isalpha() for ch in t):
-                    # skip obviously long phrases
-                    if " " in t and len(t.split()) > 4:
-                        continue
-                    skills.append(t)
-    # dedupe preserve order
-    seen = set()
-    out: List[str] = []
-    for s in skills:
-        k = s.lower()
-        if k not in seen:
-            seen.add(k)
-            out.append(s)
-        if len(out) >= max_items:
-            break
+            out.append(ln.strip())
     return out
 
-def _extract_requirements(text: str, max_items: int = 25) -> List[str]:
+def sectionize_resume_ui(text: str) -> Dict[str, Any]:
+    lines = [_n(l) for l in (text or "").splitlines()]
+    current = "summary"
+    buckets = {
+        "skills": [],
+        "experience_bullets": [],
+        "projects": [],
+        "education": [],
+        "courses": [],
+    }
+    summary_chunks: List[str] = []
+
+    for raw in lines:
+        if not raw:
+            continue
+        if _is_resume_header(raw):
+            current = _map_resume_header(raw)
+            continue
+
+        if current == "skills":
+            for p in re.split(r"[,\u2022;|/]+", raw):
+                t = p.strip()
+                if t and len(t) <= 64:
+                    buckets["skills"].append(t)
+        elif current in buckets:
+            buckets[current].append(raw)
+        else:
+            summary_chunks.append(raw)
+
+    for k in ("experience_bullets", "projects", "education", "courses"):
+        buckets[k] = _take_bullets(buckets[k])
+
+    # de-dupe skills keep order
+    seen, uniq = set(), []
+    for s in buckets["skills"]:
+        k = s.lower()
+        if k and k not in seen:
+            seen.add(k); uniq.append(s)
+    buckets["skills"] = uniq
+
+    return {
+        "summary": " ".join(summary_chunks).strip(),
+        **buckets,
+    }
+
+# ----- Job sectionizer (UI) -----
+_JOB_SECTIONS = {
+    "title": {"job title", "title", "position"},
+    "about": {"about the role", "about the job", "role", "responsibilities", "what you’ll do", "what you will do"},
+    "minimum": {"minimum qualifications", "basic qualifications", "requirements", "must have", "you have", "what you’ll need"},
+    "preferred": {"preferred qualifications", "nice to have", "bonus", "good to have", "strongly preferred"},
+}
+
+def _which_job_header(line: str) -> Optional[str]:
+    h = _HDR_END.sub("", (line or "").strip()).lower()
+    for bucket, names in _JOB_SECTIONS.items():
+        if h in names:
+            return bucket
+    return None
+
+def sectionize_job_ui(text: str, explicit_requirements=None, explicit_preferred=None) -> Dict[str, Any]:
     """
-    Extract lines that look like requirements from job text.
-    Prefer bulleted/numbered lines; fallback to non-empty lines.
+    If explicit lists are provided, those win.
+    Otherwise parse the JD into title / requirements (minimum) / preferred.
+    Header lines are filtered out of the lists.
     """
-    items = _extract_bullets(text, max_items=max_items)
-    # keep reasonably sized items
-    items = [it for it in items if 2 <= len(it) <= 300]
-    if not items and text.strip():
-        items = [text.strip()]
-    return items[:max_items]
+    if explicit_requirements or explicit_preferred:
+        return {
+            "title": "",
+            "requirements": list(dict.fromkeys(explicit_requirements or [])),
+            "preferred": list(dict.fromkeys(explicit_preferred or [])),
+        }
+
+    lines = [_n(l) for l in (text or "").splitlines()]
+    bucket: Optional[str] = None
+    title = ""
+    reqs: List[str] = []
+    prefs: List[str] = []
+    buf: List[str] = []
+
+    def flush(into: List[str]):
+        if not buf:
+            return
+        merged = " ".join(buf).strip()
+        buf.clear()
+        if not merged:
+            return
+        parts = [p.strip() for p in re.split(r"[•;]\s+|\n", merged) if p.strip()]
+        into.extend(parts or [merged])
+
+    for raw in lines:
+        if not raw:
+            continue
+        hdr = _which_job_header(raw)
+        if hdr:
+            if bucket == "minimum": flush(reqs)
+            if bucket == "preferred": flush(prefs)
+            bucket = hdr
+            continue
+
+        if bucket == "title" and not title:
+            title = raw
+            continue
+
+        if bucket == "minimum":
+            if _BULLET.match(raw):
+                reqs.append(_BULLET.sub("", raw).strip())
+            else:
+                buf.append(raw)
+            continue
+
+        if bucket == "preferred":
+            if _BULLET.match(raw):
+                prefs.append(_BULLET.sub("", raw).strip())
+            else:
+                buf.append(raw)
+            continue
+
+        # We ignore "about" for scoring on purpose
+
+    if bucket == "minimum":
+        flush(reqs)
+    if bucket == "preferred":
+        flush(prefs)
+
+    # strip any surviving header-ish lines
+    header_like = {h for names in _JOB_SECTIONS.values() for h in names}
+    def _not_header(s: str) -> bool:
+        return _HDR_END.sub("", s).lower() not in header_like
+
+    reqs = [r for r in reqs if _not_header(r)]
+    prefs = [p for p in prefs if _not_header(p)]
+
+    # de-dupe keep order
+    reqs = list(dict.fromkeys(reqs))
+    prefs = list(dict.fromkeys(prefs))
+
+    return {"title": title, "requirements": reqs, "preferred": prefs}
 
 
 # ----------------- payload builders -----------------
@@ -181,7 +295,7 @@ def build_payload() -> Dict[str, Any]:
     """
     Build the JSON body expected by the API:
       {
-        "resume": {skills, experience_bullets, projects, education, courses} OR "resume_path"
+        "resume": {summary, skills, experience_bullets, projects, education, courses} OR "resume_path"
         "job": {title, requirements, preferred} OR "job_path"
         "requirements": [...], "preferred": [...]
       }
@@ -193,34 +307,27 @@ def build_payload() -> Dict[str, Any]:
 
     # ---- RESUME ----
     if resume_text.strip():
-        payload["resume"] = {
-            "skills": _guess_skills_from_text(resume_text),
-            "experience_bullets": _extract_bullets(resume_text),
-            "projects": [],
-            "education": [],
-            "courses": [],
-        }
+        payload["resume"] = sectionize_resume_ui(resume_text)
     elif resume_path.strip():
         payload["resume_path"] = resume_path.strip()
 
     # ---- JOB ----
     if job_text.strip():
-        payload["job"] = {
-            "title": "Job",
-            "requirements": _extract_requirements(job_text),
-            "preferred": [],
-        }
+        payload["job"] = sectionize_job_ui(
+            job_text,
+            explicit_requirements=None,   # set to `requirements` if you want sidebar to override
+            explicit_preferred=None
+        )
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
 
     # Drop empty/None
-    return {k: v for k, v in payload.items() if v not in (None, [], "")}
+    return {k: v for k, v in payload.items() if v not in (None, [], "", {})}
 
 
 def has_inputs(p: Dict[str, Any]) -> bool:
     """
-    New validation: require a resume (object or path) AND a job (object or path).
-    This matches the API you have live.
+    Require a resume (object or path) AND a job (object or path).
     """
     have_resume = bool(p.get("resume") or p.get("resume_path"))
     have_job = bool(p.get("job") or p.get("job_path"))
