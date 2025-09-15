@@ -1,176 +1,156 @@
-# core/parse_job.py
 from __future__ import annotations
+from typing import Dict, List, Optional, Tuple
+import os
 import re
-from typing import Dict, List, Optional
 
-HEADER_ALIASES = {
-    "minimum": [
-        r"minimum\s+qualifications?",
-        r"basic\s+qualifications?",
-        r"must[-\s]*have",
-        r"required\s+skills?",
-        r"requirements?",
-    ],
-    "preferred": [
-        r"preferred\s+qualifications?",
-        r"nice\s*to\s*have",
-        r"bonus",
-        r"good\s+to\s+have",
-    ],
-    "responsibilities": [
-        r"responsibilit(y|ies)",
-        r"what\s+you(\'|’)?ll\s+do",
-        r"about\s+the\s+role",
-        r"duties",
-    ],
-    "about": [
-        r"about\s+the\s+(job|role|team|company)",
-        r"description",
-        r"overview",
-    ],
-}
+# Recognize common section headers
+HEADER_PATTERNS = [
+    r"\bjob\s*title\b",
+    r"\babout\s+(the\s+)?(role|job|team|company)\b",
+    r"\boverview\b",
+    r"\bdescription\b",
+    r"\bresponsibilit(y|ies)\b",
+    r"\bduties\b",
+    r"\bminimum\s+qualifications?\b",
+    r"\bbasic\s+qualifications?\b",
+    r"\bpreferred\s+qualifications?\b",
+    r"\bnice\s*to\s*have\b",
+    r"\brequirements?\b",
+]
 
-BULLET_RE = re.compile(r"^\s*(?:[-*•–]|(\d+[\.\)]))\s+")
-HEADER_LINE_RE = re.compile(r"^\s*[A-Za-z].{0,80}:?\s*$")
+HEADER_RE = re.compile(r"^\s*(?:{})(:)?\s*$".format("|".join(HEADER_PATTERNS)), re.I)
+BULLET_RE = re.compile(r"^\s*(?:[-*•–]|(\d+[\.\)]))\s+(.*)$")
 
 def _read_text(path: Optional[str], text: Optional[str]) -> str:
     if text and text.strip():
-        return text.strip()
-    if not path:
-        return ""
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read().strip()
+        return text
+    if path:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Job file not found: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    raise FileNotFoundError("Provide job_text or job_path")
 
-def _norm_lines(txt: str) -> List[str]:
-    # split and clean; keep shortish lines
-    raw = [ln.strip() for ln in txt.splitlines()]
-    # coalesce very long wrap lines into bullets if they contain semicolons
+def _normalize_line(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+def _is_header(line: str) -> bool:
+    return bool(HEADER_RE.match(line.strip()))
+
+def _collect_bullets(lines: List[str], start_idx: int) -> Tuple[List[str], int]:
+    """Collect consecutive bullets starting at start_idx (exclusive), return bullets and index of next header."""
     out: List[str] = []
-    for ln in raw:
-        if not ln:
+    i = start_idx + 1
+    while i < len(lines):
+        raw = lines[i].rstrip()
+        if not raw.strip():
+            i += 1
             continue
-        # split packed bullets like "a; b; c"
-        if ";" in ln and not BULLET_RE.match(ln):
-            parts = [p.strip(" •*-–\t") for p in ln.split(";") if p.strip()]
-            out.extend(parts)
+        if _is_header(raw):
+            break
+        m = BULLET_RE.match(raw)
+        if m:
+            item = m.group(2) or m.group(0)
+            out.append(_normalize_line(item))
         else:
-            out.append(ln)
-    return out
+            # treat short, non-header lines as paragraph bullet continuations
+            if len(raw) <= 280:
+                out.append(_normalize_line(raw))
+        i += 1
+    # De-dup and trim
+    dedup: List[str] = []
+    seen = set()
+    for x in out:
+        k = x.lower()
+        if k and k not in seen:
+            seen.add(k)
+            dedup.append(x)
+    return dedup, i
 
-def _is_header(ln: str) -> bool:
-    # explicit bullet lines are not headers
-    if BULLET_RE.match(ln):
-        return False
-    # one-liner with trailing colon or header-y structure
-    if HEADER_LINE_RE.match(ln) and (ln.endswith(":") or len(ln.split()) <= 6):
-        return True
-    # match alias lists
-    low = ln.lower().rstrip(":").strip()
-    for _, pats in HEADER_ALIASES.items():
-        for p in pats:
-            if re.fullmatch(p, low):
-                return True
-    return False
+def _extract_sections(job_text: str) -> Dict[str, List[str]]:
+    """
+    Returns dict with keys:
+      - 'minimum' : bullets under Minimum/Basic Qualifications
+      - 'preferred': bullets under Preferred/Nice to have
+      - 'other': bullets found elsewhere (Responsibilities etc.)
+    """
+    lines = [ln.rstrip() for ln in job_text.splitlines()]
+    minimum: List[str] = []
+    preferred: List[str] = []
+    other: List[str] = []
 
-def _which_bucket(header_text: str) -> str:
-    low = header_text.lower().rstrip(":").strip()
-    for bucket, pats in HEADER_ALIASES.items():
-        for p in pats:
-            if re.search(p, low):
-                return bucket
-    # fallbacks
-    if "responsib" in low or "you’ll do" in low or "youll do" in low:
-        return "responsibilities"
-    return "about"
-
-def _collect_items(lines: List[str]) -> Dict[str, List[str]]:
-    buckets = {
-        "minimum_qualifications": [],
-        "preferred_qualifications": [],
-        "responsibilities": [],
-        "about": [],
-        "other": [],
-    }
-    current = "other"
-    for ln in lines:
-        if not ln:
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if not ln.strip():
+            i += 1
             continue
         if _is_header(ln):
-            b = _which_bucket(ln)
-            if b == "minimum":
-                current = "minimum_qualifications"
-            elif b == "preferred":
-                current = "preferred_qualifications"
-            elif b == "responsibilities":
-                current = "responsibilities"
-            elif b == "about":
-                current = "about"
+            hdr = ln.strip().lower().rstrip(":")
+            bullets, j = _collect_bullets(lines, i)
+            if "preferred" in hdr or "nice" in hdr:
+                preferred.extend(bullets)
+            elif "minimum" in hdr or "basic" in hdr:
+                minimum.extend(bullets)
             else:
-                current = "other"
-            continue
+                other.extend(bullets)
+            i = j
+        else:
+            # stand-alone bullets outside headers go to 'other'
+            m = BULLET_RE.match(ln)
+            if m:
+                other.append(_normalize_line(m.group(2) or m.group(0)))
+            i += 1
 
-        # treat bullets and short lines as items; drop obvious headers
-        text = BULLET_RE.sub("", ln).strip()
-        if _is_header(text):
-            continue
-        if 2 <= len(text) <= 400:
-            buckets[current].append(text)
-
-    # de-duplicate while preserving order
-    for k, arr in buckets.items():
+    # final tidy
+    def _clean(L: List[str]) -> List[str]:
+        out: List[str] = []
         seen = set()
-        uniq: List[str] = []
-        for a in arr:
-            key = a.lower()
-            if key not in seen:
-                seen.add(key)
-                uniq.append(a)
-        buckets[k] = uniq
-    return buckets
+        for x in L:
+            y = _normalize_line(x)
+            if not y: 
+                continue
+            if _is_header(y):  # protect against stray headers
+                continue
+            k = y.lower()
+            if 2 <= len(y) <= 300 and k not in seen:
+                seen.add(k)
+                out.append(y)
+        return out[:50]
 
-def parse_job(
-    path: Optional[str] = None,
-    *,
-    text: Optional[str] = None,
-    requirements: Optional[List[str]] = None,
-    preferred: Optional[List[str]] = None,
-) -> Dict:
-    """
-    Build a normalized job object:
-    {
-      title: str,
-      requirements: [...],          # from Minimum
-      preferred: [...],             # from Preferred
-      sections: {
-        minimum_qualifications: [...],
-        preferred_qualifications: [...],
-        responsibilities: [...],
-        about: [...],
-        other: [...]
-      }
+    return {
+        "minimum": _clean(minimum),
+        "preferred": _clean(preferred),
+        "other": _clean(other),
     }
+
+def parse_job(job_path: Optional[str] = None,
+              text: Optional[str] = None,
+              requirements: Optional[List[str]] = None,
+              preferred: Optional[List[str]] = None) -> Dict:
     """
-    raw = _read_text(path, text)
-    lines = _norm_lines(raw)
-    sections = _collect_items(lines)
+    If explicit requirements/preferred are passed, use them.
+    Else, extract from text into minimum/preferred/other and use:
+      requirements := minimum or (minimum + other if minimum empty)
+      preferred    := preferred
+    """
+    job_text = _read_text(job_path, text)
 
-    # external overrides
-    if requirements:
-        sections["minimum_qualifications"] = requirements + sections["minimum_qualifications"]
-    if preferred:
-        sections["preferred_qualifications"] = preferred + sections["preferred_qualifications"]
+    if requirements is not None or preferred is not None:
+        return {
+            "title": "Job",
+            "requirements": [r for r in (requirements or []) if r.strip() and not _is_header(r)],
+            "preferred": [p for p in (preferred or []) if p.strip() and not _is_header(p)],
+            "raw_text": job_text,
+        }
 
-    # title heuristic
-    title = "Job"
-    if lines:
-        first = lines[0]
-        if len(first) <= 120 and not _is_header(first):
-            title = first
+    sections = _extract_sections(job_text)
+    reqs = sections["minimum"] or (sections["minimum"] + sections["other"])
+    prefs = sections["preferred"]
 
-    job = {
-        "title": title,
-        "requirements": sections["minimum_qualifications"],
-        "preferred": sections["preferred_qualifications"],
-        "sections": sections,
+    return {
+        "title": "Job",
+        "requirements": reqs,
+        "preferred": prefs,
+        "raw_text": job_text,
     }
-    return job
