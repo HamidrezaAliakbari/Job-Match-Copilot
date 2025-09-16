@@ -87,6 +87,17 @@ def _resolve_job(req: ScoreRequest) -> Dict:
     return job
 
 
+@app.get("/", include_in_schema=False)
+def root():
+    # simple friendly landing page (200 OK)
+    return JSONResponse(
+        {"service": "Job-Match Copilot API", "status": "ok", "docs": "/docs", "health": "/healthz"}
+    )
+
+@app.head("/", include_in_schema=False)
+def root_head():
+    # some providers send HEAD; return 200 too
+    return PlainTextResponse("", status_code=200)
 # ----------------- Health -----------------
 @app.get("/healthz")
 def healthz():
