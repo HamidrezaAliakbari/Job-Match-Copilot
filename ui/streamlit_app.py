@@ -211,15 +211,10 @@ def _extract_requirements(text: str, max_items: int = 30) -> List[str]:
 # ----------------- payload builders -----------------
 def build_payload() -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
-    payload["preferred"] = None
-    if requirements:
-            payload["preferred"] = requirements
-      # keep explicit for now
 
     # ---- RESUME ----
     if resume_text.strip():
         payload["resume"] = {
-            # simple sectionizer for demo: summary line + skills + bullets
             "summary": _extract_summary(resume_text),
             "skills": _guess_skills_from_text(resume_text),
             "experience_bullets": _extract_experience(resume_text),
@@ -233,7 +228,11 @@ def build_payload() -> Dict[str, Any]:
     # ---- JOB ----
     if job_text.strip():
         title, mins, prefs = sectionize_job(job_text)
-        
+
+        # ⬇️ attach explicit requirements to job["requirements"]
+        if requirements:
+            mins.extend([r for r in requirements if r not in mins])
+
         payload["job"] = {
             "title": title,
             "requirements": mins,
@@ -243,6 +242,7 @@ def build_payload() -> Dict[str, Any]:
         payload["job_path"] = job_path.strip()
 
     return {k: v for k, v in payload.items() if v not in (None, [], "")}
+
 
 
 # --- tiny sectionizers (resume) ---
