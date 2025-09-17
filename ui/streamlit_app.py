@@ -149,7 +149,7 @@ st.markdown("---")
 
 req_csv = st.text_input(
     "Explicit requirements (comma-separated — optional)",
-    value=(DEMO_REQS if IS_DEMO else "Python, FastAPI, AWS"),
+    value=(DEMO_REQS if IS_DEMO else ""),
     help="If provided, they are sent as 'requirements'. Leave blank to let the backend infer.",
 )
 requirements = [r.strip() for r in req_csv.split(",") if r.strip()]
