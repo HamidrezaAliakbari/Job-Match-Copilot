@@ -4,6 +4,7 @@ from typing import Optional, List, Dict
 
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
+from starlette.responses import PlainTextResponse, JSONResponse
 
 from core.parse_resume import parse_resume
 from core.parse_job import parse_job
