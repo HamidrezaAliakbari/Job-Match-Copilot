@@ -209,8 +209,37 @@ def _extract_requirements(text: str, max_items: int = 30) -> List[str]:
 
 
 # ----------------- payload builders -----------------
+def _dedupe_preserve(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for it in items:
+        t = (it or "").strip()
+        if not t:
+            continue
+        k = t.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
+
+
 def build_payload() -> Dict[str, Any]:
+    """
+    EXACT structure:
+    {
+      "requirements": [...],           # explicit requirements from the UI box
+      "resume": {...},                 # sectionized resume or resume_path
+      "job": { "title":..., "requirements":[...], "preferred":[...] }  # job text/paths
+    }
+
+    Change requested: also append the explicit requirements into job.requirements.
+    """
     payload: Dict[str, Any] = {}
+
+    # ---- TOP-LEVEL EXPLICIT REQUIREMENTS (keep exactly as user wants) ----
+    explicit_reqs = [r.strip() for r in requirements if r.strip()]
+    if explicit_reqs:
+        payload["requirements"] = explicit_reqs
 
     # ---- RESUME ----
     if resume_text.strip():
@@ -223,25 +252,33 @@ def build_payload() -> Dict[str, Any]:
             "courses": _extract_courses(resume_text),
         }
     elif resume_path.strip():
+        payload["resume"] = {}  # keep key present like your example
         payload["resume_path"] = resume_path.strip()
 
     # ---- JOB ----
+    job_obj: Dict[str, Any] = {"title": "", "requirements": [], "preferred": []}
+
     if job_text.strip():
         title, mins, prefs = sectionize_job(job_text)
-
-        # ⬇️ attach explicit requirements to job["requirements"]
-        if requirements:
-            mins.extend([r for r in requirements if r not in mins])
-
-        payload["job"] = {
-            "title": title,
-            "requirements": mins,
-            "preferred": prefs,
-        }
+        job_obj["title"] = title or ""
+        job_obj["requirements"] = mins or []
+        job_obj["preferred"] = prefs or []
     elif job_path.strip():
         payload["job_path"] = job_path.strip()
 
-    return {k: v for k, v in payload.items() if v not in (None, [], "")}
+    # Append explicit requirements into job.requirements (dedupe, preserve order)
+    if explicit_reqs:
+        job_obj["requirements"] = _dedupe_preserve(list(job_obj.get("requirements", [])) + explicit_reqs)
+
+    # Only include the job object if it has any content or we injected explicit reqs
+    if job_obj.get("title") or job_obj.get("requirements") or job_obj.get("preferred"):
+        payload["job"] = job_obj
+    else:
+        # still include an empty job object to match your example structure if you prefer:
+        payload["job"] = {"title": "", "requirements": explicit_reqs or [], "preferred": []}
+
+    # Return as-is (do NOT drop top-level "requirements"; user asked to keep it)
+    return payload
 
 
 
