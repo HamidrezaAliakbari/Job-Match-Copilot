@@ -54,7 +54,7 @@ Preferred Qualifications:
 - Data visualization (Tableau, Power BI, matplotlib, or seaborn)
 """
 
-DEMO_REQS = "Python, FastAPI, AWS"
+DEMO_REQS = ""
 
 
 # ----------------- helpers: safe secrets/env -----------------
@@ -211,8 +211,10 @@ def _extract_requirements(text: str, max_items: int = 30) -> List[str]:
 # ----------------- payload builders -----------------
 def build_payload() -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
-    
-    payload["preferred"] = None  # keep explicit for now
+    payload["preferred"] = None
+    if requirements:
+            payload["preferred"] = requirements
+      # keep explicit for now
 
     # ---- RESUME ----
     if resume_text.strip():
@@ -231,8 +233,7 @@ def build_payload() -> Dict[str, Any]:
     # ---- JOB ----
     if job_text.strip():
         title, mins, prefs = sectionize_job(job_text)
-        if requirements:
-            mins.exted(requirements)
+        
         payload["job"] = {
             "title": title,
             "requirements": mins,
