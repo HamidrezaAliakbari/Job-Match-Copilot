@@ -211,8 +211,7 @@ def _extract_requirements(text: str, max_items: int = 30) -> List[str]:
 # ----------------- payload builders -----------------
 def build_payload() -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
-    if requirements:
-        payload["requirements"] = requirements
+    
     payload["preferred"] = None  # keep explicit for now
 
     # ---- RESUME ----
@@ -232,6 +231,8 @@ def build_payload() -> Dict[str, Any]:
     # ---- JOB ----
     if job_text.strip():
         title, mins, prefs = sectionize_job(job_text)
+        if requirements:
+            mins.exted(requirements)
         payload["job"] = {
             "title": title,
             "requirements": mins,
