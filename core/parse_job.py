@@ -1,27 +1,35 @@
+# core/parse_job.py
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, Optional, List
+from pathlib import Path
 
-def parse_job(
-    path: Optional[str] = None,
-    requirements: Optional[List[str]] = None,
-    preferred: Optional[List[str]] = None,
-    text: Optional[str] = None,
-) -> Dict:
-    if text is None:
-        if not path:
-            raise ValueError("parse_job: provide text or path")
-        with open(path, "r", encoding="utf-8") as f:
-            text = f.read()
+from core.sectionizer import sectionize_job_text
 
-    job = {
-        "title": "Job",
-        "requirements": requirements or [],
-        "preferred": preferred or [],
-        "raw_text": text,
-    }
+def _read(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8", errors="ignore")
 
-    if not job["requirements"]:
-        lines = [ln.strip("-• \t") for ln in text.splitlines() if ln.strip()]
-        job["requirements"] = [ln for ln in lines if len(ln) > 6][:10]
+def parse_job(path: Optional[str] = None,
+              text: Optional[str] = None,
+              requirements: Optional[List[str]] = None,
+              preferred: Optional[List[str]] = None) -> Dict:
+    """
+    Return a normalized job object with keys:
+      title(str), requirements[List[str]], preferred[List[str]]
+    - If explicit requirements/preferred are provided, they take precedence.
+    - Otherwise, we parse the raw JD and extract Minimum vs Preferred blocks.
+    """
+    if requirements or preferred:
+        return sectionize_job_text(
+            text or "",
+            explicit_requirements=requirements,
+            explicit_preferred=preferred,
+        )
 
-    return job
+    if text and text.strip():
+        return sectionize_job_text(text)
+
+    if path:
+        raw = _read(path)
+        return sectionize_job_text(raw)
+
+    return {"title": "", "requirements": [], "preferred": []}

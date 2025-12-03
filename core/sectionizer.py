@@ -1,196 +1,241 @@
 # core/sectionizer.py
 from __future__ import annotations
+from typing import Dict, List, Tuple, Optional
 import re
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-from collections import defaultdict
 
-try:
-    from joblib import load as joblib_load  # type: ignore
-except Exception:
-    joblib_load = None  # type: ignore
+# ---------- shared helpers ----------
+_WS = re.compile(r"\s+")
+_BULLET = re.compile(r"^\s*(?:[-*•–]|(\d{1,3}[.)]))\s+")
+_HEADER_TRAIL = re.compile(r"[:：\-\s]*$")
 
-CANON = {
-    "SUMMARY": ["summary", "professional summary", "profile", "about me", "objective"],
-    "SKILLS": ["skills", "technical skills", "core skills", "tooling", "technologies"],
-    "EXPERIENCE": [
-        "experience", "professional experience", "work experience", "employment",
-        "work history", "relevant experience", "industry experience"
-    ],
-    "PROJECTS": ["projects", "selected projects", "academic projects", "personal projects"],
-    "EDUCATION": [
-        "education", "academic background", "academics", "education & training",
-        "education and training"
-    ],
-    "COURSES": ["courses", "relevant coursework", "coursework"],
-    "CERTIFICATIONS": ["certifications", "certs", "licenses", "certification"],
-    "PUBLICATIONS": ["publications", "papers", "articles"],
-    "HONORS": ["honors", "awards", "honors & awards", "awards & honors"],
-    "VOLUNTEER": ["volunteer", "volunteering", "community service"],
-    "AFFILIATIONS": ["affiliations", "memberships", "professional memberships"],
-    "CONTACT": ["contact", "contact information", "personal details"],
-    "MISC": ["misc", "additional", "other", "additional information"],
-}
+def norm(s: str) -> str:
+    return _WS.sub(" ", (s or "").strip())
 
-HEADER_MAP: Dict[str, str] = {}
-for canon, aliases in CANON.items():
-    for a in aliases:
-        HEADER_MAP[a.lower()] = canon
+def is_header(line: str) -> bool:
+    l = (line or "").strip()
+    if not l:
+        return False
+    # obvious headers (case-insensitive, strip punctuation)
+    candidates = [
+        "professional summary", "summary", "objective",
+        "experience", "work experience", "employment",
+        "projects", "selected projects",
+        "education", "academics",
+        "skills", "technical skills",
+        "courses", "coursework", "certifications", "certificates",
+        "publications", "research",
+        "activities", "awards",
+    ]
+    h = _HEADER_TRAIL.sub("", l).lower()
+    return h in candidates
 
-BULLET = re.compile(r"^\s*([\-*•–]|(\d+[\.\)]))\s+")
-HEADER_LINE = re.compile(r"^\s*([A-Z][A-Za-z0-9 &/+\-]|[A-Z]{3,})(?:\s*[:：])?\s*$")
-POSSIBLE_HEADER_KEYWORDS = re.compile(r"(education|experience|skills|summary|projects?|course|certification|publication|honors?|awards?|volunteer|affiliations?)", re.I)
-YEAR = r"(19|20)\d{2}"
-DATE_RANGE = re.compile(fr"({YEAR})(\s*[–\-–]\s*| to )({YEAR}|present|current)", re.I)
-DEGREE = re.compile(r"(B\.?S\.?|M\.?S\.?|BSc|MSc|Ph\.?D\.?|MBA|MD|DDS|DO|BA|MA|MEng|BEng|MPhil|DPhil|MS|BS)", re.I)
-UNIVERSITY = re.compile(r"(university|institute|college|polytechnic|school of|faculty of)", re.I)
-GPA = re.compile(r"\bGPA[:\s]*(\d\.\d{1,2})", re.I)
-LOOKS_COURSE = re.compile(r"(?i)\b(course|coursework|module|class|laboratory|lab|seminar)\b")
-HARD_SKILL_HINT = re.compile(r"(?i)\b(python|pytorch|tensorflow|fastapi|docker|aws|qdrant|mlflow|nlp|sql|excel|sas|matlab|r\b|java|c\+\+|javascript|tableau|powerbi|git|kubernetes|linux)\b")
+def clean_header(line: str) -> str:
+    return _HEADER_TRAIL.sub("", (line or "").strip())
 
-@dataclass
-class Line:
-    text: str
-    idx: int
-    is_bullet: bool
-    looks_header: bool
-
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s.strip())
-
-def _header_to_canon(header_text: str) -> Optional[str]:
-    key = _norm(header_text).strip(":：").lower()
-    key = re.sub(r"[^a-z0-9 &/+\-]", "", key)
-    if key in HEADER_MAP:
-        return HEADER_MAP[key]
-    m = POSSIBLE_HEADER_KEYWORDS.search(header_text)
-    if not m:
-        return None
-    kw = m.group(1).lower()
-    for canon, aliases in CANON.items():
-        if any(kw in a for a in aliases):
-            return canon
-    return None
-
-def _split_lines(text: str) -> List[Line]:
-    raw = text.splitlines()
-    out: List[Line] = []
-    for i, ln in enumerate(raw):
+def take_bullets(lines: List[str]) -> List[str]:
+    out: List[str] = []
+    for ln in lines:
         if not ln.strip():
             continue
-        out.append(
-            Line(
-                text=_norm(ln),
-                idx=i,
-                is_bullet=bool(BULLET.match(ln)),
-                looks_header=bool(HEADER_LINE.match(ln) or POSSIBLE_HEADER_KEYWORDS.search(ln)),
-            )
-        )
+        if _BULLET.match(ln):
+            out.append(_BULLET.sub("", ln).strip())
+        else:
+            out.append(ln.strip())
     return out
 
-def _basic_rules_assign(lines: List[Line]) -> List[Tuple[int, str]]:
-    assigned: List[Tuple[int, str]] = []
-    current: str = "SUMMARY"
-    seen_any_header = False
+def dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for it in items:
+        k = it.lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(it)
+    return out
 
-    for ln in lines:
-        canon = None
-        if ln.looks_header:
-            if len(ln.text) <= 64:
-                canon = _header_to_canon(ln.text)
-        if canon:
-            current = canon
-            seen_any_header = True
-            continue
+# ---------- resume sectionizer ----------
+RESUME_SECTION_KEYS = {
+    "summary": {"professional summary", "summary", "objective"},
+    "experience": {"experience", "work experience", "employment"},
+    "projects": {"projects", "selected projects"},
+    "education": {"education", "academics"},
+    "skills": {"skills", "technical skills"},
+    "courses": {"courses", "coursework", "certifications", "certificates"},
+}
 
-        if not seen_any_header and ln.idx <= 8 and not ln.is_bullet:
-            assigned.append((ln.idx, "SUMMARY"))
-            continue
-        if DEGREE.search(ln.text) or UNIVERSITY.search(ln.text) or GPA.search(ln.text):
-            assigned.append((ln.idx, "EDUCATION"))
-            continue
-        if DATE_RANGE.search(ln.text) or re.search(r"(?i)\b(intern|engineer|analyst|manager|research|coordinator)\b", ln.text):
-            assigned.append((ln.idx, "EXPERIENCE"))
-            continue
-        if LOOKS_COURSE.search(ln.text):
-            assigned.append((ln.idx, "COURSES"))
-            continue
-        if HARD_SKILL_HINT.search(ln.text) and ("," in ln.text or ln.is_bullet or len(ln.text) <= 80):
-            assigned.append((ln.idx, "SKILLS"))
-            continue
-        if re.search(r"(?i)\bproject(s)?\b", ln.text):
-            assigned.append((ln.idx, "PROJECTS"))
-            continue
-        assigned.append((ln.idx, current))
-    return assigned
+def sectionize_resume_text(text: str) -> Dict[str, List[str] | str]:
+    """
+    Parse a raw pasted resume into structured buckets:
+      summary(str), skills[List[str]], experience_bullets[List[str]],
+      projects[List[str]], education[List[str]], courses[List[str]]
+    """
+    lines = [norm(l) for l in (text or "").splitlines()]
+    # collect sections
+    current = "summary"  # default to summary until we hit an explicit header
+    buckets: Dict[str, List[str]] = {
+        "skills": [],
+        "experience_bullets": [],
+        "projects": [],
+        "education": [],
+        "courses": [],
+    }
+    summary_chunks: List[str] = []
 
-def _optional_ml_assign(lines: List[Line], rules_labels: List[str], model_path: str) -> Optional[List[str]]:
-    if joblib_load is None:
-        return None
-    try:
-        model = joblib_load(model_path)
-    except Exception:
-        return None
-    X = [f"[RULE={r}] {ln.text}" for ln, r in zip(lines, rules_labels)]
-    try:
-        preds = model.predict(X)
-        preds = [p if p in CANON else rl for p, rl in zip(preds, rules_labels)]
-        return preds
-    except Exception:
-        return None
+    def map_header(h: str) -> str:
+        h = clean_header(h).lower()
+        for key, names in RESUME_SECTION_KEYS.items():
+            if h in names:
+                # map to our internal field names
+                if key == "experience":
+                    return "experience_bullets"
+                return key
+        # unknown header → treat as experience
+        return "experience_bullets"
 
-def _segment_from_labels(lines: List[Line], labels: List[str]) -> Dict[str, Dict[str, any]]:
-    buckets: Dict[str, List[Line]] = defaultdict(list)
-    for ln, lab in zip(lines, labels):
-        buckets[lab].append(ln)
+    for raw in lines:
+        if not raw:
+            continue
+        if is_header(raw):
+            current = map_header(raw)
+            continue
+        # route line into bucket
+        if current == "skills":
+            # split by separators
+            parts = re.split(r"[,\u2022;|/]+", raw)
+            for p in parts:
+                t = p.strip()
+                if t and len(t) <= 64:
+                    buckets["skills"].append(t)
+        elif current in buckets:
+            buckets[current].append(raw)
+        else:
+            # default to summary chunks
+            summary_chunks.append(raw)
 
-    sections: Dict[str, Dict[str, any]] = {}
-    for lab, grp in buckets.items():
-        confidence = 0.4 + min(0.6, 0.02 * len(grp))
-        if lab == "EDUCATION" and any(DEGREE.search(ln.text) or UNIVERSITY.search(ln.text) for ln in grp):
-            confidence = max(confidence, 0.75)
-        if lab == "SKILLS" and any("," in ln.text or HARD_SKILL_HINT.search(ln.text) for ln in grp):
-            confidence = max(confidence, 0.7)
-        if lab == "EXPERIENCE" and any(DATE_RANGE.search(ln.text) for ln in grp):
-            confidence = max(confidence, 0.7)
-        text = "\n".join(ln.text for ln in grp)
-        sections[lab] = {
-            "lines": [ln.idx for ln in grp],
-            "text": text,
-            "confidence": round(float(confidence), 2),
+    # post-process
+    for k in ("experience_bullets", "projects", "education", "courses"):
+        buckets[k] = take_bullets(buckets[k])  # type: ignore[assignment]
+
+    buckets["skills"] = dedupe_keep_order(buckets["skills"])  # type: ignore[assignment]
+    summary = " ".join(summary_chunks).strip()
+
+    return {
+        "summary": summary,
+        "skills": buckets["skills"],
+        "experience_bullets": buckets["experience_bullets"],
+        "projects": buckets["projects"],
+        "education": buckets["education"],
+        "courses": buckets["courses"],
+    }
+
+# ---------- job sectionizer ----------
+JOB_HEADERS = {
+    "minimum": {
+        "minimum qualifications", "basic qualifications", "requirements",
+        "must have", "you have", "what you’ll need"
+    },
+    "preferred": {
+        "preferred qualifications", "nice to have", "bonus", "good to have",
+        "strongly preferred"
+    },
+    "about": {
+        "about the role", "about the job", "role", "responsibilities",
+        "what you’ll do", "what you will do"
+    },
+    "title": {"job title", "title", "position"},
+}
+
+def is_job_header(line: str) -> Optional[str]:
+    l = clean_header(line).lower()
+    for bucket, names in JOB_HEADERS.items():
+        if l in names:
+            return bucket
+    return None
+
+def sectionize_job_text(text: str,
+                        explicit_requirements: Optional[List[str]] = None,
+                        explicit_preferred: Optional[List[str]] = None) -> Dict[str, List[str] | str]:
+    """
+    From a raw JD, extract:
+      title(str), requirements[List[str]], preferred[List[str]]
+    Ignore header lines as requirements.
+    """
+    if explicit_requirements or explicit_preferred:
+        return {
+            "title": "",
+            "requirements": dedupe_keep_order(explicit_requirements or []),
+            "preferred": dedupe_keep_order(explicit_preferred or []),
         }
-    return sections
 
-def sectionize_text(text: str, model_path: str = "models/sectionizer.joblib") -> Dict[str, Dict[str, any]]:
-    text = text.replace("\r\n", "\n")
-    lines = _split_lines(text)
-    if not lines:
-        return {}
-    rules_assign_pairs = _basic_rules_assign(lines)
-    rules_labels = [lab for _, lab in sorted(rules_assign_pairs, key=lambda x: x[0])]
-    ml_labels = _optional_ml_assign(lines, rules_labels, model_path)
-    labels = ml_labels if ml_labels else rules_labels
-    sections = _segment_from_labels(lines, labels)
+    lines = [norm(l) for l in (text or "").splitlines()]
+    bucket = None
+    title = ""
+    reqs: List[str] = []
+    prefs: List[str] = []
 
-    if "SUMMARY" in sections:
-        topmost_line = min(sections["SUMMARY"]["lines"]) if sections["SUMMARY"]["lines"] else 0
-        if topmost_line > 15 and sections["SUMMARY"]["confidence"] < 0.6:
-            misc = sections.get("MISC", {"lines": [], "text": "", "confidence": 0.5})
-            misc["lines"] += sections["SUMMARY"]["lines"]
-            misc["text"] = (misc["text"] + "\n" + sections["SUMMARY"]["text"]).strip()
-            sections["MISC"] = misc
-            del sections["SUMMARY"]
+    buf: List[str] = []
 
-    if "EXPERIENCE" in sections:
-        exp_text = sections["EXPERIENCE"]["text"]
-        lines_exp = [ln for ln in exp_text.splitlines() if not LOOKS_COURSE.search(ln)]
-        course_lines = [ln for ln in exp_text.splitlines() if LOOKS_COURSE.search(ln)]
-        if course_lines:
-            sections["EXPERIENCE"]["text"] = "\n".join(lines_exp).strip()
-            c = sections.get("COURSES", {"lines": [], "text": "", "confidence": 0.7})
-            c["text"] = (c["text"] + "\n" + "\n".join(course_lines)).strip()
-            sections["COURSES"] = c
+    def flush_into(target: List[str]):
+        if not buf:
+            return
+        merged = " ".join(buf).strip()
+        buf.clear()
+        if merged:
+            parts = [p.strip() for p in re.split(r"[•;]\s+|\n", merged) if p.strip()]
+            if parts:
+                target.extend(parts)
+            else:
+                target.append(merged)
 
-    for k in list(sections.keys()):
-        sections[k]["text"] = sections[k]["text"].strip()
-    return sections
+    for raw in lines:
+        if not raw:
+            continue
+        bh = is_job_header(raw)
+        if bh:
+            # flush previous buffer
+            if bucket == "minimum":
+                flush_into(reqs)
+            elif bucket == "preferred":
+                flush_into(prefs)
+            bucket = bh
+            continue
+
+        if bucket == "title" and not title:
+            title = raw
+            continue
+
+        if bucket == "minimum":
+            if _BULLET.match(raw):
+                reqs.append(_BULLET.sub("", raw).strip())
+            else:
+                buf.append(raw)
+            continue
+
+        if bucket == "preferred":
+            if _BULLET.match(raw):
+                prefs.append(_BULLET.sub("", raw).strip())
+            else:
+                buf.append(raw)
+            continue
+
+        # ignore "about" for requirements
+
+    # flush tail
+    if bucket == "minimum":
+        flush_into(reqs)
+    elif bucket == "preferred":
+        flush_into(prefs)
+
+    # remove any residual header-like entries that slipped in
+    header_like = {*(h for names in JOB_HEADERS.values() for h in names)}
+    reqs = [r for r in reqs if clean_header(r).lower() not in header_like]
+    prefs = [r for r in prefs if clean_header(r).lower() not in header_like]
+
+    reqs = dedupe_keep_order(reqs)
+    prefs = dedupe_keep_order(prefs)
+
+    return {
+        "title": title,
+        "requirements": reqs,
+        "preferred": prefs,
+    }
